@@ -150,6 +150,7 @@ button:focus-visible,input:focus-visible{outline:3px solid var(--pink);outline-o
 .sndbtn.bad{background:var(--pink);color:#fff}
 .sndcheck{width:100%;max-width:560px;text-align:center;display:flex;flex-direction:column;gap:8px}
 .sndcheck summary{cursor:pointer;font-weight:900;color:var(--soft);font-size:14px}
+.gate .tabs{display:none}
 .gateform{display:flex;flex-direction:column;gap:10px;width:100%;max-width:360px;text-align:left}
 .gateform label{display:flex;flex-direction:column;gap:4px;font-weight:900;font-size:14px}
 .gateform input{font-family:var(--body);font-weight:800;font-size:17px;padding:10px 12px;border:3px solid var(--ink);border-radius:12px;background:#fff;color:var(--ink);min-width:0}
@@ -204,27 +205,12 @@ kbd{font-family:var(--body);background:#fff;border:2px solid var(--line);border-
     <div class="panel gate" style="align-items:center;text-align:center">
       <div class="lineup" id="gateLineup"></div>
       <h2 id="gateTitle">Members only</h2>
-      <p class="muted" id="gateIntro">Jelly B's is invite only. Got an invite code? Join below. Already joined? Sign in.</p>
-      <div class="tabs" role="tablist" id="gateTabs">
-        <button class="tab" role="tab" data-gt="join" aria-selected="true">I have an invite code</button>
-        <button class="tab" role="tab" data-gt="in" aria-selected="false">I've already joined</button>
-      </div>
+      <p class="muted" id="gateIntro">Jelly B's is invite only. Pop in your invite code and pick a player name.</p>
       <form class="gateform" id="gateJoin">
         <label>Invite code<input id="gCode" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="JB-XXXXXXXX" required></label>
-        <label>Email<input id="gEmail" type="email" autocomplete="email" required></label>
-        <label>Choose a password<input id="gPass" type="password" autocomplete="new-password" minlength="6" required></label>
+        <label>Your player name<input id="gName" autocomplete="nickname" maxlength="20" placeholder="e.g. Captain Jelly" required></label>
         <button class="go pink" type="submit" id="gJoinBtn">Join the band</button>
-      </form>
-      <form class="gateform" id="gateIn" hidden>
-        <label>Email<input id="gEmail2" type="email" autocomplete="email" required></label>
-        <label>Password<input id="gPass2" type="password" autocomplete="current-password" required></label>
-        <button class="go" type="submit" id="gInBtn">Sign in</button>
-      </form>
-      <form class="gateform" id="gateCodeOnly" hidden>
-        <p class="muted" id="gCodeOnlyMsg"></p>
-        <label>Invite code<input id="gCode2" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="JB-XXXXXXXX" required></label>
-        <button class="go pink" type="submit">Use code</button>
-        <button class="small" type="button" id="gOut">Sign out</button>
+        <p class="muted" style="font-size:13px;text-align:center">This device will remember you, so next time you'll go straight in.</p>
       </form>
       <p class="muted" id="gateMsg" role="status" style="font-size:14px;min-height:1.4em"></p>
     </div>
@@ -476,12 +462,13 @@ function esc(s) { return String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<':
 const CFG = window.JB_CONFIG || {};
 let sb = null, user = null, cloudTimer = 0;
 try { if (CFG.supabaseUrl && CFG.supabaseAnonKey && window.supabase) sb = window.supabase.createClient(CFG.supabaseUrl, CFG.supabaseAnonKey); } catch (e) { sb = null; }
+function playerName() { let n = null; try { n = localStorage.getItem('jb-player-name'); } catch (e) {} return n || (user && user.email ? user.email.split('@')[0] : 'Player'); }
 async function cloudPush() {
   if (!sb || !user || !S) return;
   try {
     await sb.from('jb_saves').upsert({ user_id: user.id, tour: S, updated_at: new Date().toISOString() });
     const gigs = S.cleared.filter(Boolean).length;
-    await sb.from('jb_leaderboard').upsert({ user_id: user.id, player_name: (user.email || 'Player').split('@')[0].slice(0, 20), band: S.band, leader: S.leader, gigs, fans: Math.round(S.fans), leadership: Math.round(S.lead), champion: !!S.champion, updated_at: new Date().toISOString() });
+    await sb.from('jb_leaderboard').upsert({ user_id: user.id, player_name: playerName().slice(0, 20), band: S.band, leader: S.leader, gigs, fans: Math.round(S.fans), leadership: Math.round(S.lead), champion: !!S.champion, updated_at: new Date().toISOString() });
   } catch (e) { console.warn('cloud save failed', e); }
 }
 async function cloudPull() {
@@ -500,8 +487,8 @@ async function loadLeaderboard() {
 function renderAcct() {
   if (!sb) return;
   $('acct').hidden = false;
-  $('acctForm').hidden = true; $('acctOut').hidden = !user;
-  $('acctStatus').textContent = user ? `Signed in as ${user.email}. Your tour saves online.` : 'Sign in to save your tour online and join the leaderboard.';
+  $('acctForm').hidden = true; $('acctOut').hidden = !user || !user.email;
+  $('acctStatus').textContent = user ? `Playing as ${playerName()}. Your tour saves online.` : '';
 }
 async function afterSignIn() {
   renderAcct();
@@ -512,20 +499,16 @@ async function afterSignIn() {
 }
 /* ----- invite-only gate: one-time codes checked by Supabase ----- */
 let member = false;
-const GATE = !!sb;
+const GATE = !!(CFG.supabaseUrl && CFG.supabaseAnonKey);
 function gateMsg(m, bad) { const el = $('gateMsg'); el.textContent = m || ''; el.style.color = bad ? 'var(--berry)' : 'var(--soft)'; }
-function gateTab(which) {
-  document.querySelectorAll('#gateTabs .tab').forEach(b => b.setAttribute('aria-selected', b.dataset.gt === which));
-  $('gateJoin').hidden = which !== 'join'; $('gateIn').hidden = which !== 'in'; $('gateCodeOnly').hidden = which !== 'code';
-  $('gateTabs').hidden = which === 'code'; gateMsg('');
-}
+function gateTab() { gateMsg(''); }
 function showGate(which) { $('gateLineup').innerHTML = lineupHTML(); gateTab(which); show('gate'); }
 async function checkMember() {
   if (!sb || !user) return false;
   try { const { data } = await sb.from('jb_members').select('user_id').eq('user_id', user.id).maybeSingle(); return !!data; } catch (e) { return false; }
 }
 async function redeem(code) {
-  const { data, error } = await sb.rpc('jb_redeem_invite', { p_code: code.trim().toUpperCase() });
+  const { data, error } = await sb.rpc('jb_redeem_invite', { p_code: code.trim().toUpperCase(), p_name: null });
   if (error) throw error;
   return data === true;
 }
@@ -535,57 +518,38 @@ async function enterGame() {
 }
 async function gateCheck() {
   if (!GATE) return;
-  if (!user) { showGate('join'); return; }
-  if (await checkMember()) { await enterGame(); return; }
-  let pending = null; try { pending = localStorage.getItem('jb-pending-code'); } catch (e) {}
-  if (pending) {
-    try { if (await redeem(pending)) { toast('Welcome to the band!'); await enterGame(); return; } } catch (e) {}
-    try { localStorage.removeItem('jb-pending-code'); } catch (e) {}
-  }
-  $('gCodeOnlyMsg').textContent = `Signed in as ${user.email}. Enter an invite code to unlock the game.`;
-  showGate('code');
+  if (user && await checkMember()) { await enterGame(); return; }
+  showGate('join');
 }
-if (GATE) {
-  document.querySelectorAll('#gateTabs .tab').forEach(b => b.addEventListener('click', () => gateTab(b.dataset.gt)));
+if (GATE && !sb) {
+  setTimeout(() => { showGate('join'); document.querySelectorAll('.gateform').forEach(el => el.hidden = true); gateMsg('Can\'t reach the Jelly B\'s members server right now. Check your internet connection and reload the page.', true); }, 0);
+}
+if (GATE && sb) {
   sb.auth.getSession().then(({ data }) => { user = data.session ? data.session.user : null; renderAcct(); gateCheck(); });
   sb.auth.onAuthStateChange((_e, session) => { user = session ? session.user : null; renderAcct(); });
   $('gateJoin').addEventListener('submit', async e => {
     e.preventDefault();
-    const code = $('gCode').value.trim().toUpperCase(), email = $('gEmail').value.trim(), pass = $('gPass').value;
+    const code = $('gCode').value.trim().toUpperCase(), name = $('gName').value.trim().slice(0, 20);
+    if (!name) { gateMsg('Pick a player name first.', true); return; }
     $('gJoinBtn').disabled = true; gateMsg('Checking your code…');
     try {
       const { data: ok, error: vErr } = await sb.rpc('jb_invite_valid', { p_code: code });
       if (vErr) throw vErr;
       if (!ok) { gateMsg('That code isn\'t valid or has already been used. Check it and try again.', true); return; }
-      try { localStorage.setItem('jb-pending-code', code); } catch (e2) {}
-      const { data, error } = await sb.auth.signUp({ email, password: pass });
-      if (error) {
-        if (/registered|exists/i.test(error.message)) { gateMsg('That email already has an account. Use "I\'ve already joined" to sign in, and your code will be used then.', true); gateTab('in'); $('gEmail2').value = email; return; }
-        throw error;
+      if (!user) {
+        const { data, error } = await sb.auth.signInAnonymously();
+        if (error) { gateMsg(/anonymous/i.test(error.message) ? 'Joining is switched off at the moment. (Grown-ups: turn on anonymous sign-ins in Supabase.)' : 'Something went wrong: ' + error.message, true); return; }
+        user = data.user;
       }
-      if (!data.session) { gateMsg('Nearly there! Check your email to confirm your account, then come back and sign in. Your code is saved.'); gateTab('in'); $('gEmail2').value = email; return; }
-      user = data.user;
-      if (await redeem(code)) { toast('Welcome to the band!'); await enterGame(); }
+      const { data: used, error: rErr } = await sb.rpc('jb_redeem_invite', { p_code: code, p_name: name });
+      if (rErr) throw rErr;
+      if (used) { try { localStorage.setItem('jb-player-name', name); } catch (e2) {} toast(`Welcome to the band, ${name}!`); await enterGame(); }
       else gateMsg('Someone used that code a moment ago. Ask for a new one.', true);
     } catch (err) { gateMsg('Something went wrong: ' + (err.message || err), true); }
     finally { $('gJoinBtn').disabled = false; }
   });
-  $('gateIn').addEventListener('submit', async e => {
-    e.preventDefault(); $('gInBtn').disabled = true; gateMsg('Signing in…');
-    try {
-      const { error } = await sb.auth.signInWithPassword({ email: $('gEmail2').value.trim(), password: $('gPass2').value });
-      if (error) { gateMsg(error.message === 'Invalid login credentials' ? 'Email or password not recognised.' : error.message, true); return; }
-      user = (await sb.auth.getUser()).data.user; gateMsg(''); await gateCheck();
-    } finally { $('gInBtn').disabled = false; }
-  });
-  $('gateCodeOnly').addEventListener('submit', async e => {
-    e.preventDefault();
-    try { if (await redeem($('gCode2').value)) { toast('Welcome to the band!'); await enterGame(); } else gateMsg('That code isn\'t valid or has already been used.', true); }
-    catch (err) { gateMsg('Something went wrong: ' + (err.message || err), true); }
-  });
-  $('gOut').addEventListener('click', async () => { await sb.auth.signOut(); user = null; showGate('in'); });
   $('acctForm').addEventListener('submit', e => e.preventDefault());
-  $('acctOut').addEventListener('click', async () => { await sb.auth.signOut(); user = null; member = false; S = null; showGate('in'); toast('Signed out.'); });
+  $('acctOut').addEventListener('click', async () => { await sb.auth.signOut(); user = null; member = false; S = null; showGate('join'); toast('Signed out.'); });
 }
 
 /* ---------- save ---------- */
