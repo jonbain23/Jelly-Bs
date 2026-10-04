@@ -134,6 +134,16 @@ button:focus-visible,input:focus-visible{outline:3px solid var(--pink);outline-o
 .lb div{display:grid;grid-template-columns:28px minmax(0,1fr) auto;gap:8px;padding:6px 8px;border-radius:10px;background:#fff;border:2px solid var(--line)}
 .lb div.me{border-color:var(--pink)}
 .lb span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.lyricbox{position:absolute;left:50%;bottom:10px;transform:translateX(-50%);width:min(660px,calc(100% - 20px));background:rgba(255,250,244,.97);border:3px solid var(--ink);border-radius:16px;padding:10px 12px;display:flex;flex-direction:column;gap:8px;box-shadow:0 4px 0 var(--ink);max-height:64%;overflow:auto}
+.lyline{font-family:var(--display);font-weight:900;font-size:clamp(16px,2.4vw,22px);line-height:1.25}
+.lyline .fill{color:var(--pink)}.lyline .blank{color:#c4ad99}
+.lyno{display:block;font-family:var(--body);font-size:11px;font-weight:900;letter-spacing:.8px;text-transform:uppercase;color:var(--soft)}
+.lytimer{height:6px;border-radius:9px;background:var(--line);overflow:hidden}.lytimer i{display:block;height:100%;background:var(--pink);transition:width .1s linear}
+.chips{display:flex;flex-wrap:wrap;gap:6px}
+.chip{font-family:var(--body);font-weight:900;font-size:16px;padding:6px 12px;border-radius:999px;border:2px solid var(--ink);background:#fff;color:var(--ink);cursor:pointer;transition:transform .08s}
+.chip:hover:not(:disabled){transform:translateY(-2px);background:#fff3f8}
+.chip kbd{font-size:11px;padding:0 4px;margin-right:3px}
+.chip:disabled{opacity:.3;cursor:default}
 .toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:var(--ink);color:#fff;font-weight:900;padding:10px 18px;border-radius:12px;z-index:9;max-width:calc(100% - 32px);text-align:center}
 
 /* play */
@@ -272,6 +282,12 @@ kbd{font-family:var(--body);background:#fff;border:2px solid var(--line);border-
           <button data-k="special" id="tSpecial">Fizz</button>
           <button data-k="jump">Jump</button>
         </div>
+      </div>
+      <div class="lyricbox" id="lyricBox" hidden>
+        <div class="lyline" id="lyLine"></div>
+        <div class="lytimer"><i id="lyTime"></i></div>
+        <div class="chips" id="lyChips"></div>
+        <div class="row" style="justify-content:space-between"><span class="muted" id="lyHint" style="font-weight:800;font-size:13px"></span><span class="row"><button class="small" id="lyUndo">Undo</button><button class="go pink" id="lySing" style="font-size:18px;padding:7px 18px">Sing it!</button></span></div>
       </div>
       <div class="overlay" id="ovPlat" hidden><div class="panel" id="ovPlatBody"></div></div>
       <div class="overlay" id="ovBattle" hidden><div class="panel" id="ovBattleBody"></div></div>
@@ -469,32 +485,84 @@ function loadSave() { try { const s = JSON.parse(localStorage.getItem('jellybs-b
 function effVocals() { return S.stats.vocals + GEAR.mic[S.gear.mic].v; }
 function fanMult() { return (1 + 0.08 * S.stats.show) * (1 + (S.manager ? S.manager.boost : 0) / 100); }
 
-/* ---------- audio ---------- */
-let actx = null, master = null, noiseBuf = null, muted = false;
+/* ---------- audio engine ---------- */
+let actx = null, master = null, noiseBuf = null, distCurve = null, muted = false, unlocked = false;
 function audio() {
   if (actx) return actx;
   try {
     actx = new (window.AudioContext || window.webkitAudioContext)();
-    master = actx.createGain(); master.gain.value = 0.7; master.connect(actx.destination);
-    noiseBuf = actx.createBuffer(1, actx.sampleRate * 0.5, actx.sampleRate);
+    const comp = actx.createDynamicsCompressor(); comp.threshold.value = -16; comp.ratio.value = 4; comp.connect(actx.destination);
+    master = actx.createGain(); master.gain.value = 0.85; master.connect(comp);
+    noiseBuf = actx.createBuffer(1, actx.sampleRate * 0.6, actx.sampleRate);
     const d = noiseBuf.getChannelData(0); for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+    distCurve = new Float32Array(1024); for (let i = 0; i < 1024; i++) { const x = i / 512 - 1; distCurve[i] = Math.tanh(x * 4); }
   } catch (e) { actx = null; }
   return actx;
 }
-document.addEventListener('pointerdown', () => { const a = audio(); if (a && a.state === 'suspended') a.resume(); }, { capture: true });
+function silentWavURL() {
+  try {
+    const n = 4410, buf = new ArrayBuffer(44 + n * 2), v = new DataView(buf), w = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
+    w(0, 'RIFF'); v.setUint32(4, 36 + n * 2, true); w(8, 'WAVE'); w(12, 'fmt '); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+    v.setUint32(24, 44100, true); v.setUint32(28, 88200, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true); w(36, 'data'); v.setUint32(40, n * 2, true);
+    return URL.createObjectURL(new Blob([buf], { type: 'audio/wav' }));
+  } catch (e) { return null; }
+}
+function unlockAudio() {
+  const a = audio(); if (!a) return;
+  if (a.state !== 'running') a.resume().catch(() => {});
+  if (unlocked) return;
+  unlocked = true;
+  try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch (e) {}
+  try { const b = a.createBuffer(1, 1, 22050), src = a.createBufferSource(); src.buffer = b; src.connect(a.destination); src.start(0); } catch (e) {}
+  try { const u = silentWavURL(); if (u) { const el = new Audio(u); el.loop = true; el.volume = 0.01; el.setAttribute('playsinline', ''); el.play().catch(() => {}); } } catch (e) {}
+  try { if ('speechSynthesis' in window) { const u = new SpeechSynthesisUtterance(' '); u.volume = 0; speechSynthesis.speak(u); } } catch (e) {}
+  setTimeout(() => { if (MUS.pending && !MUS.on) startPending(); }, 60);
+}
+['pointerdown', 'touchend', 'keydown', 'click'].forEach(ev => document.addEventListener(ev, unlockAudio, { capture: true }));
+document.addEventListener('visibilitychange', () => { if (!document.hidden && actx && actx.state !== 'running') actx.resume().catch(() => {}); });
+function aNow() { return actx ? actx.currentTime : performance.now() / 1000; }
 function tone(f1, f2, dur, type = 'sine', vol = 0.1, when = 0) {
   if (muted || !audio()) return;
   const t0 = when || actx.currentTime, o = actx.createOscillator(), g = actx.createGain();
-  o.type = type; o.frequency.setValueAtTime(f1, t0); o.frequency.exponentialRampToValueAtTime(f2, t0 + dur);
+  o.type = type; o.frequency.setValueAtTime(f1, t0); o.frequency.exponentialRampToValueAtTime(Math.max(20, f2), t0 + dur);
   g.gain.setValueAtTime(vol, t0); g.gain.exponentialRampToValueAtTime(0.001, t0 + dur);
   o.connect(g).connect(master); o.start(t0); o.stop(t0 + dur + 0.02);
 }
-function noise(when, dur, vol, hp) {
-  if (muted || !audio()) return;
+function noise(when, dur, vol, hp, type = 'highpass', q = 1) {
+  if (muted || !audio() || vol <= 0) return;
   const s = actx.createBufferSource(); s.buffer = noiseBuf;
-  const f = actx.createBiquadFilter(); f.type = 'highpass'; f.frequency.value = hp;
+  const f = actx.createBiquadFilter(); f.type = type; f.frequency.value = hp; f.Q.value = q;
   const g = actx.createGain(); g.gain.setValueAtTime(vol, when); g.gain.exponentialRampToValueAtTime(0.001, when + dur);
   s.connect(f).connect(g).connect(master); s.start(when); s.stop(when + dur + 0.02);
+}
+function kick(t, v = 1) { if (muted || !actx) return; const o = actx.createOscillator(), g = actx.createGain(); o.frequency.setValueAtTime(150, t); o.frequency.exponentialRampToValueAtTime(40, t + 0.14); g.gain.setValueAtTime(0.55 * v, t); g.gain.exponentialRampToValueAtTime(0.001, t + 0.2); o.connect(g).connect(master); o.start(t); o.stop(t + 0.22); }
+function snare(t, v = 1) { noise(t, 0.16, 0.22 * v, 1500); tone(220, 160, 0.08, 'triangle', 0.08 * v, t); }
+function hat(t, v = 1, open = false) { noise(t, open ? 0.14 : 0.04, 0.07 * v, 7000); }
+function clap(t, v = 1) { for (let k = 0; k < 3; k++) noise(t + k * 0.011, 0.06 + (k === 2 ? 0.08 : 0), 0.2 * v, 1400, 'bandpass', 0.8); }
+function vibrato(o, start, end, rate, cents) {
+  const l = actx.createOscillator(), lg = actx.createGain(); l.frequency.value = rate; lg.gain.setValueAtTime(0, start); lg.gain.linearRampToValueAtTime(cents, start + 0.2);
+  l.connect(lg).connect(o.detune); l.start(start); l.stop(end);
+}
+function osc(type, f, at, stop, dest, detune = 0) { const o = actx.createOscillator(); o.type = type; o.frequency.setValueAtTime(f, at); o.detune.value = detune; o.connect(dest); o.start(at); o.stop(stop); return o; }
+function env(g, at, a, d, sus, r, dur, vol) { g.gain.setValueAtTime(0.0001, at); g.gain.linearRampToValueAtTime(vol, at + a); g.gain.setTargetAtTime(Math.max(0.0001, vol * sus), at + a, d / 3); g.gain.setTargetAtTime(0.0001, at + Math.max(dur, a + 0.01), r / 3); }
+function lowpass(freq, dest) { const f = actx.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = freq; f.connect(dest); return f; }
+function play(inst, m, at, dur, vol = 0.1) {
+  if (muted || !actx) return;
+  const f = midi(m), g = actx.createGain(), end = at + dur + 0.7;
+  switch (inst) {
+    case 'bell': { osc('sine', f, at, end, g); const g2 = actx.createGain(); g2.gain.value = 0.25; g2.connect(g); osc('sine', f * 2.76, at, end, g2); env(g, at, 0.004, 0.7, 0, 0.4, dur, vol); break; }
+    case 'piano': osc('triangle', f, at, end, g); osc('sine', f * 2, at, end, g, 3); env(g, at, 0.004, 0.9, 0.2, 0.3, dur, vol * 0.7); break;
+    case 'pluck': osc('triangle', f, at, end, g); env(g, at, 0.003, 0.18, 0, 0.1, dur, vol); break;
+    case 'organ': osc('sine', f, at, end, g); osc('sine', f * 2, at, end, g); osc('sine', f * 3, at, end, g); env(g, at, 0.01, 0.1, 0.8, 0.08, dur, vol * 0.45); break;
+    case 'lead': { const lp = lowpass(2600, g); const o = osc('square', f, at, end, lp); vibrato(o, at + 0.12, end, 5.5, 8); env(g, at, 0.01, 0.2, 0.6, 0.1, dur, vol * 0.55); break; }
+    case 'brass': { const lp = actx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.setValueAtTime(500, at); lp.frequency.linearRampToValueAtTime(2600, at + 0.07); lp.frequency.setTargetAtTime(1300, at + 0.1, 0.2); lp.connect(g); osc('sawtooth', f, at, end, lp); osc('sawtooth', f, at, end, lp, 9); env(g, at, 0.03, 0.2, 0.7, 0.1, dur, vol * 0.45); break; }
+    case 'guitar': { const ws = actx.createWaveShaper(); ws.curve = distCurve; ws.connect(lowpass(3000, g)); const pre = actx.createGain(); pre.gain.value = 0.7; pre.connect(ws); osc('sawtooth', f, at, end, pre); osc('sawtooth', f * 1.4983, at, end, pre); env(g, at, 0.004, 0.35, 0.45, 0.12, dur, vol * 0.4); break; }
+    case 'pad': case 'strings': { const lp = lowpass(inst === 'pad' ? 1100 : 1700, g); osc('sawtooth', f, at, end, lp, -8); osc('sawtooth', f, at, end, lp, 8); env(g, at, 0.25, 0.6, 0.8, 0.5, dur, vol * 0.3); break; }
+    case 'bass': osc('triangle', f, at, end, g); osc('sine', f / 2, at, end, g); env(g, at, 0.004, 0.25, 0.6, 0.08, dur, vol); break;
+    case 'synthbass': { const lp = actx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.setValueAtTime(1500, at); lp.frequency.setTargetAtTime(330, at, 0.07); lp.connect(g); osc('sawtooth', f, at, end, lp); osc('square', f / 2, at, end, lp); env(g, at, 0.004, 0.2, 0.5, 0.06, dur, vol * 0.75); break; }
+    default: osc('triangle', f, at, end, g); env(g, at, 0.005, 0.2, 0.4, 0.1, dur, vol);
+  }
+  g.connect(master);
 }
 const sfx = {
   jump: () => tone(300, 620, 0.14, 'square', 0.04), jump2: () => tone(500, 950, 0.14, 'square', 0.04),
@@ -503,14 +571,45 @@ const sfx = {
   stomp: () => tone(260, 90, 0.16, 'square', 0.07), hurt: () => tone(240, 80, 0.32, 'sawtooth', 0.07),
   spring: () => tone(200, 900, 0.25, 'sine', 0.1), fizz: () => tone(400, 1600, 0.3, 'sawtooth', 0.04), dash: () => tone(700, 300, 0.18, 'triangle', 0.07),
   check: () => tone(523, 784, 0.15, 'triangle', 0.08),
-  cheer: () => { if (muted || !audio()) return; noise(actx.currentTime, 1.2, 0.08, 1200); [523, 659, 784, 1046].forEach((f, i) => tone(f, f, 0.2, 'triangle', 0.08, actx.currentTime + i * 0.1)); },
+  cheer: () => { if (muted || !audio()) return; noise(actx.currentTime, 1.4, 0.09, 1200); for (let k = 0; k < 6; k++) clap(actx.currentTime + 0.15 + k * 0.17, 0.6); [523, 659, 784, 1046].forEach((f, i) => tone(f, f, 0.2, 'triangle', 0.07, actx.currentTime + i * 0.1)); },
   sad: () => { if (!audio()) return; tone(392, 330, 0.25, 'square', 0.04); tone(330, 196, 0.45, 'square', 0.04, actx.currentTime + 0.25); },
   miss: () => tone(140, 90, 0.12, 'sine', 0.06),
+  boo: (at) => { if (muted || !audio()) return; const t0 = at || actx.currentTime; [131, 139, 147, 123].forEach((f, k) => { const g = actx.createGain(); const lp = lowpass(700, g); const o = osc('sawtooth', f, t0 + k * 0.03, t0 + 1.3, lp, k * 7); o.frequency.linearRampToValueAtTime(f * 0.8, t0 + 1.1); env(g, t0 + k * 0.03, 0.12, 0.3, 0.8, 0.25, 0.9, 0.05); g.connect(master); }); noise(t0, 1.0, 0.03, 500, 'lowpass'); },
   buy: () => { if (!audio()) return; tone(880, 1760, 0.1, 'triangle', 0.08); tone(1320, 2640, 0.12, 'triangle', 0.06, actx.currentTime + 0.07); },
 };
-function kick(t, v = 1) { if (muted || !actx) return; const o = actx.createOscillator(), g = actx.createGain(); o.frequency.setValueAtTime(150, t); o.frequency.exponentialRampToValueAtTime(40, t + 0.14); g.gain.setValueAtTime(0.5 * v, t); g.gain.exponentialRampToValueAtTime(0.001, t + 0.18); o.connect(g).connect(master); o.start(t); o.stop(t + 0.2); }
 
-/* ---------- soundtrack engine ---------- */
+/* ---------- music: chords, tracks and the music director ---------- */
+const CHORD_CACHE = {};
+function chord(name) {
+  if (CHORD_CACHE[name]) return CHORD_CACHE[name];
+  const m = /^([A-G])([b#]?)(maj7|m7|m|7|5)?$/.exec(name) || [0, 'C', '', ''];
+  const root = { C: 60, D: 62, E: 64, F: 53, G: 55, A: 57, B: 59 }[m[1]] + (m[2] === 'b' ? -1 : m[2] === '#' ? 1 : 0);
+  const iv = { '': [0, 4, 7, 12], m: [0, 3, 7, 12], '7': [0, 4, 7, 10], m7: [0, 3, 7, 10], maj7: [0, 4, 7, 11], '5': [0, 7, 12, 19] }[m[3] || ''];
+  return (CHORD_CACHE[name] = iv.map(x => root + x));
+}
+const TRACKS = {
+  title:  { name: 'Sugar World Theme', bpm: 104, prog: ['C', 'G', 'Am', 'F'], drums: { k: [0, 4], s: [2, 6], h: [0, 2, 4, 6], v: 0.6 }, bass: { inst: 'bass', steps: [0, 3, 4] }, pad: 'strings', lead: 'bell', arp: 'pluck' },
+  create: { name: 'Band Room Funk', bpm: 100, prog: ['Dm7', 'G7', 'Dm7', 'G7'], drums: { k: [0, 3, 5], s: [2, 6], h: [0, 1, 2, 3, 4, 5, 6, 7] }, bass: { inst: 'synthbass', steps: [0, 1, 3, 4, 6, 7], oct: true }, stab: 'organ', lead: 'lead' },
+  map:    { name: 'On Tour', bpm: 122, prog: ['F', 'C', 'Dm', 'Bb'], drums: { k: [0, 2, 4, 6], s: [2, 6], h: [1, 3, 5, 7], open: true }, bass: { inst: 'bass', steps: [0, 1, 2, 3, 4, 5, 6, 7], oct: true }, pad: 'pad', lead: 'lead', arp: 'pluck' },
+  hq:     { name: 'Back Office Jazz', bpm: 90, prog: ['Cmaj7', 'Am7', 'Dm7', 'G7'], drums: { k: [0, 5], s: [], h: [0, 2, 3, 4, 6, 7], brush: true, v: 0.5 }, bass: { inst: 'bass', steps: [0, 2, 4, 6], walk: true }, comp: 'piano', lead: 'piano' },
+  finale: { name: 'Champions of Sugar World', bpm: 116, prog: ['C', 'F', 'G', 'C', 'Am', 'F', 'G', 'G'], drums: { k: [0, 3, 4], s: [2, 6], h: [0, 1, 2, 3, 4, 5, 6, 7], cl: [2, 6] }, bass: { inst: 'synthbass', steps: [0, 2, 3, 4, 6] }, pad: 'strings', lead: 'brass' },
+};
+const GENRE = {
+  'Pop':     { bpm: 112, progs: [['C', 'G', 'Am', 'F'], ['F', 'G', 'Em', 'Am'], ['Am', 'F', 'C', 'G']], drums: { k: [0, 4], s: [2, 6], h: [0, 1, 2, 3, 4, 5, 6, 7], cl: [2, 6] }, bass: { inst: 'bass', steps: [0, 3, 4, 6] }, pad: 'pad', lead: 'bell', arp: 'pluck', hit: 'bell' },
+  'Rock':    { bpm: 132, progs: [['E5', 'C5', 'G5', 'D5'], ['A5', 'A5', 'G5', 'D5'], ['E5', 'G5', 'A5', 'C5']], drums: { k: [0, 3, 4], s: [2, 6], h: [0, 1, 2, 3, 4, 5, 6, 7] }, bass: { inst: 'synthbass', steps: [0, 1, 2, 3, 4, 5, 6, 7] }, chug: true, lead: 'lead', hit: 'guitar' },
+  'Disco':   { bpm: 120, progs: [['Am7', 'Dm7', 'G7', 'Cmaj7'], ['Fmaj7', 'Em7', 'Dm7', 'Cmaj7'], ['Dm7', 'G7', 'Em7', 'Am7']], drums: { k: [0, 2, 4, 6], s: [2, 6], h: [1, 3, 5, 7], open: true }, bass: { inst: 'synthbass', steps: [0, 1, 2, 3, 4, 5, 6, 7], oct: true }, pad: 'strings', stab: 'brass', lead: 'lead', hit: 'brass' },
+  'Hip-hop': { bpm: 92, progs: [['Cm', 'Ab', 'Eb', 'Bb'], ['Fm', 'Cm', 'Ab', 'G'], ['Am7', 'Dm7', 'Am7', 'E7']], drums: { k: [0, 3, 5], s: [2, 6], h: [0, 1, 2, 3, 4, 5, 6, 7] }, bass: { inst: 'synthbass', steps: [0, 3, 5] }, comp: 'piano', lead: 'piano', hit: 'piano' },
+};
+function genreTrack(style, variant, section) {
+  const g = GENRE[style] || GENRE.Pop;
+  const t = { ...g, prog: g.progs[variant % g.progs.length], bpm: g.bpm + (variant % 3) * 3, drums: { ...g.drums } };
+  t.name = `${style} ${{ road: 'road trip', guitar: 'guitar battle', dance: 'dance battle', lyrics: 'sing-along' }[section] || ''}`;
+  if (section === 'road') { t.arp = t.arp || 'pluck'; }
+  if (section === 'guitar') { t.hit = style === 'Rock' ? 'guitar' : g.hit; if (style !== 'Rock') t.chug = false; }
+  if (section === 'dance') { t.bpm = g.bpm + 8; t.drums = { ...g.drums, k: [0, 2, 4, 6], cl: [2, 6], open: true }; t.lead = 'lead'; t.hit = 'pluck'; t.chug = false; }
+  if (section === 'lyrics') { t.drums = { ...g.drums, v: 0.65 }; t.lead = null; t.arp = null; t.chug = false; t.pad = t.pad || 'pad'; }
+  return t;
+}
 function makeMelody(seedStr) {
   let h = 7; for (const ch of seedStr) h = (h * 31 + ch.charCodeAt(0)) | 0;
   const rnd = mulberry(h), motif = [];
@@ -523,29 +622,88 @@ function makeMelody(seedStr) {
   const ending = motif.slice(0, 8).concat([4, null, null, null, 2, null, null, null]);
   return [...motif, ...answer, ...motif, ...ending];
 }
-function playStep(st, step, at, mel, vol = 1) {
-  const s = ((step % 8) + 8) % 8, bar = Math.floor(step / 8), ch = st.chords[((bar % 4) + 4) % 4];
-  if (st.kick.includes(s)) kick(at, vol);
-  if (st.snare.includes(s)) { noise(at, 0.16, 0.22 * vol, 1500); tone(220, 160, 0.08, 'triangle', 0.08 * vol, at); }
-  if (st.hat.includes(s)) noise(at, st.oct && s % 2 ? 0.12 : 0.04, 0.07 * vol, 7000);
-  const beat = 60 / st.bpm;
-  if (st.bass.includes(s)) { const f = midi(ch[0] - 24 + (st.oct && s % 2 ? 12 : 0)); tone(f, f * 0.99, beat * 0.45, st.lead === 'sawtooth' ? 'sawtooth' : 'triangle', 0.12 * vol, at); }
-  if (s === 0) ch.slice(0, 3).forEach(m => tone(midi(m), midi(m), beat * 4, 'sine', 0.025 * vol, at));
-  if (mel) { const m = mel[((step % mel.length) + mel.length) % mel.length]; if (m != null) { const n = ch[m % 4] + 12 + (m >= 4 ? 12 : 0); tone(midi(n), midi(n), beat * 0.45, st.lead, 0.045 * vol, at); tone(midi(n + 12), midi(n + 12), beat * 0.3, 'sine', 0.015 * vol, at + 0.01); } }
+function chordAt(track, bar) { const n = track.prog.length; return chord(track.prog[((bar % n) + n) % n]); }
+function playStep(track, step, at, mel, vol = 1) {
+  if (muted || !actx) return;
+  const s = ((step % 8) + 8) % 8, bar = Math.floor(step / 8), ch = chordAt(track, bar), beat = 60 / track.bpm, d = track.drums, dv = (d.v || 1) * vol;
+  if (d.k.includes(s)) kick(at, dv);
+  if (d.s && d.s.includes(s)) snare(at, dv * (d.brush ? 0.35 : 1));
+  if (d.h.includes(s)) hat(at, dv * (d.brush ? 0.5 : 1), d.open && s % 2 === 1);
+  if (d.cl && d.cl.includes(s)) clap(at, dv * 0.7);
+  const b = track.bass;
+  if (b && b.steps.includes(s)) { let m = ch[0] - 12; if (b.oct && s % 2) m += 12; if (b.walk) m = ch[[0, 1, 2, 3][(s / 2) | 0]] - 12; play(b.inst, m, at, beat * 0.45, 0.16 * vol); }
+  if (s === 0 && track.pad) ch.slice(0, 3).forEach(m => play(track.pad, m, at, beat * 4, 0.06 * vol));
+  if (track.stab && (s === 1 || s === 5)) ch.slice(0, 3).forEach(m => play(track.stab, m + 12, at, beat * 0.25, 0.045 * vol));
+  if (track.comp && (s === 0 || s === 3 || s === 6)) ch.slice(0, 3).forEach(m => play(track.comp, m, at, beat * 0.6, 0.05 * vol));
+  if (track.chug) play('guitar', ch[0] - 12, at, beat * 0.35, 0.09 * vol);
+  if (track.arp && !(mel && mel[((step % mel.length) + mel.length) % mel.length] != null)) play(track.arp, ch[[0, 1, 2, 3, 2, 1, 2, 3][s]] + 12, at, beat * 0.4, 0.035 * vol);
+  if (mel && track.lead) { const mm = mel[((step % mel.length) + mel.length) % mel.length]; if (mm != null) play(track.lead, ch[mm % 4] + 12 + (mm >= 4 ? 12 : 0), at, beat * 0.45, 0.075 * vol); }
 }
-const MUS = { on: false };
-function musicStart(styleName, seed, vol = 0.8) {
-  if (!audio()) return;
-  const st = STYLES[styleName];
-  Object.assign(MUS, { on: true, st, beat: 60 / st.bpm, next: actx.currentTime + 0.12, t0: actx.currentTime + 0.12, step: 0, mel: makeMelody(styleName + seed), vol });
+const MUS = { on: false, key: null, pending: null };
+function musicPlay(key, track, vol = 0.8) {
+  if (MUS.key === key && (MUS.on || MUS.pending)) return;
+  MUS.on = false; MUS.key = key; MUS.pending = { track, vol };
+  if (unlocked && audio()) startPending();
 }
-function musicStop() { MUS.on = false; }
+function startPending() {
+  const p = MUS.pending; if (!p || !actx) return;
+  if (actx.state !== 'running') actx.resume().catch(() => {});
+  Object.assign(MUS, { on: true, track: p.track, beat: 60 / p.track.bpm, next: actx.currentTime + 0.12, t0: actx.currentTime + 0.12, step: 0, mel: makeMelody(MUS.key), vol: p.vol });
+}
+function musicStop() { MUS.on = false; MUS.key = null; MUS.pending = null; }
 function musicTick() {
   if (!MUS.on || !actx) return;
-  if (muted) { MUS.next = Math.max(MUS.next, actx.currentTime); return; }
-  while (MUS.next < actx.currentTime + 0.2) { playStep(MUS.st, MUS.step, MUS.next, MUS.mel, MUS.vol); MUS.next += MUS.beat / 2; MUS.step++; }
+  if (muted || actx.state !== 'running') { MUS.next = Math.max(MUS.next, actx.currentTime + 0.05); return; }
+  if (MUS.next < actx.currentTime - 0.5) MUS.next = actx.currentTime + 0.05;
+  while (MUS.next < actx.currentTime + 0.2) { playStep(MUS.track, MUS.step, MUS.next, MUS.mel, MUS.vol); MUS.next += MUS.beat / 2; MUS.step++; }
 }
 function musicBeat() { if (!MUS.on || !actx) return t * 2; return (actx.currentTime - MUS.t0) / MUS.beat; }
+function roadTrack() { return genreTrack(S.style, S.stop, 'road'); }
+
+/* ---------- voices: every Jelly B sings ---------- */
+const VOICES = {
+  bob:    { semi: 0,  form: 1.12, sp: 1.35, rate: 1.05 }, marsha: { semi: 3, form: 1.2, sp: 1.6, rate: 0.95 },
+  lilly:  { semi: 5,  form: 1.25, sp: 1.9,  rate: 1.1 },  jack:   { semi: -5, form: 1.0, sp: 0.75, rate: 0.95 },
+  melvin: { semi: -3, form: 1.05, sp: 1.05, rate: 1.0 },  bella:  { semi: 4, form: 1.22, sp: 1.8, rate: 1.08 },
+};
+const FORMANTS = { a: [800, 1150, 2900], e: [500, 1800, 2600], i: [300, 2300, 3000], o: [450, 800, 2830], u: [330, 700, 2500] };
+function vowelOf(word) { const w = word.toLowerCase(); if (/oo|ou|ew/.test(w)) return 'u'; if (/ee|ea|ie/.test(w)) return 'i'; const m = w.match(/[aeiouy]/); return !m ? 'a' : m[0] === 'y' ? 'i' : m[0]; }
+function singNote(id, word, m, at, dur, vol = 0.1, formMul = 1, semiAdd = 0) {
+  if (muted || !actx) return;
+  const V = VOICES[id] || VOICES.bob, f = midi(m + V.semi + semiAdd), fm = FORMANTS[vowelOf(word)];
+  const src = actx.createOscillator(); src.type = 'sawtooth';
+  src.frequency.setValueAtTime(f * 0.96, at); src.frequency.linearRampToValueAtTime(f, at + 0.06);
+  vibrato(src, at + 0.1, at + dur + 0.4, 5.6, 22);
+  const g = actx.createGain(); g.gain.setValueAtTime(0.0001, at); g.gain.linearRampToValueAtTime(vol, at + 0.03); g.gain.setTargetAtTime(vol * 0.8, at + 0.05, 0.1); g.gain.setTargetAtTime(0.0001, at + dur, 0.05);
+  fm.forEach((F, k) => { const bp = actx.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = F * V.form * formMul; bp.Q.value = [6, 8, 10][k]; const bg = actx.createGain(); bg.gain.value = [1, 0.55, 0.3][k] * 3.5; src.connect(bp); bp.connect(bg); bg.connect(g); });
+  if (/^[^aeiou]/i.test(word)) noise(at, 0.035, vol * 0.5, 3200, 'bandpass', 2);
+  g.connect(master); src.start(at); src.stop(at + dur + 0.45);
+}
+let ttsVoice = null;
+function pickVoice() { try { const vs = speechSynthesis.getVoices(); ttsVoice = vs.find(v => /en-GB/i.test(v.lang) && /female|kate|serena|martha|stephanie|libby|sonia/i.test(v.name)) || vs.find(v => /en-GB/i.test(v.lang)) || vs.find(v => /^en/i.test(v.lang)) || null; } catch (e) {} }
+if ('speechSynthesis' in window) { pickVoice(); try { speechSynthesis.onvoiceschanged = pickVoice; } catch (e) {} }
+function say(id, text, rate = 1, delayMs = 0) {
+  if (muted || !('speechSynthesis' in window) || !text) return;
+  setTimeout(() => { if (muted) return; try { const V = VOICES[id] || VOICES.bob; const u = new SpeechSynthesisUtterance(text); if (ttsVoice) u.voice = ttsVoice; u.lang = ttsVoice ? ttsVoice.lang : 'en-GB'; u.pitch = V.sp; u.rate = clamp(rate * V.rate, 0.5, 1.7); u.volume = 1; speechSynthesis.speak(u); } catch (e) {} }, Math.max(0, delayMs));
+}
+function hush() { try { if ('speechSynthesis' in window) speechSynthesis.cancel(); } catch (e) {} }
+const CONTOURS = [[2, 2, 3, 4, 3, 2, 1, 2, 2, 3, 4, 5], [4, 3, 2, 2, 1, 2, 3, 4, 4, 3, 2, 1], [0, 2, 4, 4, 3, 2, 2, 1, 2, 3, 4, 4], [4, 4, 3, 2, 3, 4, 5, 4, 3, 2, 1, 0]];
+/* sing words on the beat; returns the audio time the line finishes */
+function singLine(id, words, at, track, opt = {}) {
+  const beat = 60 / track.bpm, startBar = Math.floor(((at - (opt.a0 || at)) + 0.01) / (beat * 4));
+  const cont = CONTOURS[(opt.contour || 0) % CONTOURS.length];
+  const step = words.length > 8 ? beat / 2 : beat;
+  let tt = at;
+  words.forEach((w, k) => {
+    const bar = startBar + Math.floor((tt - at) / (beat * 4)), ch = chordAt(track, bar), ext = [ch[0], ch[1], ch[2], ch[3], ch[1] + 12, ch[2] + 12];
+    const m = ext[cont[k % cont.length] % ext.length] + 12, last = k === words.length - 1, dur = last ? beat * 1.8 : step * 0.9;
+    singNote(id, w, m, tt, dur, 0.09);
+    if (opt.choir) opt.choir.forEach((cid, j) => singNote(cid, w, m, tt + 0.01 * (j + 1), dur, 0.035, 1, j % 2 ? -12 : 0));
+    tt += last ? beat * 2 : step;
+  });
+  if (opt.speak !== false) say(id, words.join(' '), clamp((words.length / (tt - at)) / 2.6, 0.6, 1.3), (at - aNow()) * 1000);
+  return tt;
+}
 const reduceMotion = window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
 
 /* ---------- canvas plumbing ---------- */
@@ -756,6 +914,7 @@ function renderMap() {
     <p class="muted" style="font-size:14px">First lead the band down the road to ${R0.venue}. Then win the battle: a guitar round and a dance round.</p>
     <div class="row"><button class="go pink" id="goGig">Hit the road</button><button class="go alt" id="goHQ">Band HQ</button></div>`;
   $('goGig').onclick = () => startPlatform();
+  if (unlocked) say(m.id, text, 1, 400);
   $('goHQ').onclick = () => show('hq');
   $('tourTitle').textContent = `${S.band} on the road to Sugar Rush Arena`;
   $('tourList').innerHTML = RIVALS.map((r, k) => {
@@ -941,7 +1100,7 @@ function startPlatform() {
   }
   p.maxHearts = S.leader === 'melvin' ? 4 : 3; p.hearts = p.maxHearts;
   resetPlayer(); camX = 0; banner = 2.8;
-  show('play'); setMode('plat'); musicStart(S.style, 'road' + S.stop, 0.7);
+  show('play'); setMode('plat'); musicPlay('road' + S.stop, roadTrack(), 0.7);
 }
 function resetPlayer() { Object.assign(p, { x: p.spawn.x, y: p.spawn.y, vx: 0, vy: 0, face: 1, dash: 0, special: true, air: 1, rocket: false }); hist = []; }
 
@@ -1243,6 +1402,8 @@ function platDone() {
   const leadGain = 3 + (run.hurt ? 0 : 2) + (run.fans === run.fansTotal && run.fansTotal ? 1 : 0);
   S.coins += run.notes; S.fans += fans; S.lead = Math.min(100, S.lead + leadGain); save(); updateStrip();
   const mate = bandmates()[S.stop % 5];
+  say(mate.id, run.hurt ? 'We got here! Now let\'s show them what we can do!' : 'Not a scratch! That\'s how you lead from the front!', 1, 900);
+  musicPlay('arrive' + S.stop, TRACKS.map, 0.5);
   setTimeout(() => {
     $('ovPlatBody').innerHTML = `<h2>Made it to ${RIVALS[S.stop].venue}!</h2>
       <div class="reward"><span>+${run.notes} sugar notes</span><span>+${fans} fans</span><span>+${leadGain} leadership${run.hurt ? '' : ' (no bumps!)'}</span></div>
@@ -1269,38 +1430,100 @@ let B = null;
 const now = () => performance.now() / 1000;
 function startBattle(attempt = 0) {
   musicStop();
-  B = { round: 0, attempt, rounds: [], total: 0, rivalTotal: 0, hits: 0, notes: 0, perfects: 0 };
+  B = { round: 0, attempt, rounds: [], total: 0, rivalTotal: 0, hits: 0, noteCount: 0, perfects: 0, mood: 0.3, crowdState: 'ok', boos: [] };
   setMode('battle'); startRound();
 }
+const SONGS = [
+  { title: 'Sugar Rush Summer', lines: [
+    { pre: 'Sun is shining, sky is', ans: ['so', 'blue'], x: ['grey', 'sprouts', 'gloomy', 'glue'] },
+    { pre: 'Jelly B\'s are singing just for', ans: ['me', 'and', 'you'], x: ['the', 'cabbage', 'fridge', 'shoe'] },
+    { pre: 'Jump up high and touch the', ans: ['candy', 'clouds'], x: ['muddy', 'puddles', 'sprout', 'crowds'] },
+    { pre: 'Clap your hands and sing it', ans: ['super', 'loud'], x: ['very', 'quiet', 'snore', 'proud'] } ] },
+  { title: 'Lollipop Lane', lines: [
+    { pre: 'Lollipop spinning, we will never', ans: ['ever', 'stop'], x: ['fall', 'asleep', 'mop', 'floors'] },
+    { pre: 'Dance all the way to the', ans: ['very', 'top'], x: ['bottom', 'bin', 'smelly', 'drop'] },
+    { pre: 'Sweet as honey, bright as', ans: ['the', 'sun'], x: ['a', 'bin', 'cold', 'bun'] },
+    { pre: 'On Lollipop Lane we have', ans: ['so', 'much', 'fun'], x: ['no', 'boring', 'bun', 'homework'] } ] },
+  { title: 'Fudge Falls Flow', lines: [
+    { pre: 'Fudge is falling, feel the', ans: ['chocolate', 'flow'], x: ['sticky', 'glue', 'mud', 'slow'] },
+    { pre: 'Mic in hand, we\'re ready to', ans: ['steal', 'the', 'show'], x: ['eat', 'peas', 'mow', 'grass'] },
+    { pre: 'Bass is bumping, hands up', ans: ['way', 'up', 'high'], x: ['down', 'low', 'pie', 'socks'] },
+    { pre: 'Fudge Falls crew is flying', ans: ['sky', 'high'], x: ['pie', 'mud', 'under', 'bed'] } ] },
+  { title: 'Toffee Town Shuffle', lines: [
+    { pre: 'Kick your boots up, spin around, welcome to', ans: ['Toffee', 'Town'], x: ['Cabbage', 'City', 'frown', 'Ground'] },
+    { pre: 'Stick together, never', ans: ['let', 'you', 'down'], x: ['sit', 'fall', 'crown', 'sideways'] },
+    { pre: 'Shuffle left and shuffle', ans: ['to', 'the', 'right'], x: ['upside', 'sideways', 'wall', 'night'] },
+    { pre: 'We\'ll keep dancing', ans: ['day', 'and', 'night'], x: ['bath', 'bed', 'bite', 'Monday'] } ] },
+  { title: 'Marshmallow Mountain', lines: [
+    { pre: 'Soft as a pillow, light as', ans: ['the', 'air'], x: ['a', 'brick', 'chair', 'heavy'] },
+    { pre: 'Marshmallow magic', ans: ['is', 'everywhere'], x: ['nowhere', 'under', 'stairs', 'chair'] },
+    { pre: 'Disco lights are spinning', ans: ['round', 'and', 'round'], x: ['slowly', 'down', 'sound', 'upside'] },
+    { pre: 'Feel your feet', ans: ['leave', 'the', 'ground'], x: ['smell', 'glue', 'sound', 'socks'] } ] },
+  { title: 'Bubblegum Bounce', lines: [
+    { pre: 'Blow a bubble, watch it', ans: ['grow', 'and', 'grow'], x: ['pop', 'shrink', 'snow', 'sock'] },
+    { pre: 'Bounce to the beat from', ans: ['head', 'to', 'toe'], x: ['nose', 'bed', 'knee', 'snow'] },
+    { pre: 'Sticky, stretchy, sweet and', ans: ['super', 'pink'], x: ['smelly', 'green', 'sink', 'stinky'] },
+    { pre: 'Better than you\'d', ans: ['ever', 'think'], x: ['never', 'sink', 'drink', 'forget'] } ] },
+  { title: 'Caramel Canyon Rock', lines: [
+    { pre: 'Turn it up and make some', ans: ['noise', 'tonight'], x: ['toast', 'quiet', 'bite', 'sleepy'] },
+    { pre: 'Caramel guitars are shining', ans: ['gold', 'and', 'bright'], x: ['mouldy', 'grey', 'dull', 'night'] },
+    { pre: 'Echo, echo, through the', ans: ['canyon', 'walls'], x: ['kitchen', 'halls', 'sock', 'drawer'] },
+    { pre: 'Rock and roll until the', ans: ['curtain', 'falls'], x: ['bedtime', 'halls', 'pudding', 'calls'] } ] },
+  { title: 'Liquorice Lagoon', lines: [
+    { pre: 'Dive in deep where the liquorice', ans: ['waters', 'swirl'], x: ['wiggly', 'worms', 'girl', 'puddles'] },
+    { pre: 'Best little band in the', ans: ['whole', 'wide', 'world'], x: ['broken', 'small', 'swirl', 'shed'] },
+    { pre: 'Spin the record, drop the', ans: ['beat', 'right', 'now'], x: ['cake', 'cow', 'later', 'bin'] },
+    { pre: 'When we finish, take a', ans: ['great', 'big', 'bow'], x: ['tiny', 'nap', 'cow', 'bath'] } ] },
+  { title: 'Candyfloss Clouds', lines: [
+    { pre: 'Floating high on candyfloss,', ans: ['way', 'up', 'here'], x: ['down', 'under', 'fear', 'stairs'] },
+    { pre: 'Hear the whole of Sugar World', ans: ['clap', 'and', 'cheer'], x: ['snore', 'sneeze', 'yawn', 'deer'] },
+    { pre: 'Pink and fluffy,', ans: ['soft', 'and', 'light'], x: ['hard', 'heavy', 'fright', 'bricks'] },
+    { pre: 'We will shine like', ans: ['stars', 'tonight'], x: ['socks', 'mud', 'fright', 'Tuesday'] } ] },
+  { title: 'Sugar Rush Royale', lines: [
+    { pre: 'From the garage to the arena,', ans: ['here', 'we', 'are'], x: ['there', 'you', 'car', 'sleeping'] },
+    { pre: 'Every Jelly B is a', ans: ['shining', 'star'], x: ['smelly', 'sock', 'car', 'sprout'] },
+    { pre: 'We led from the front and we', ans: ['never', 'gave', 'up'], x: ['always', 'fell', 'cup', 'asleep'] },
+    { pre: 'Now we\'re lifting the', ans: ['golden', 'sugar', 'cup'], x: ['muddy', 'plastic', 'up', 'sprout'] } ] },
+];
 function startRound() {
-  const i = S.stop, st = STYLES[S.style], beat = 60 / st.bpm, rnd = mulberry(500 + i * 31 + B.round * 7 + B.attempt * 3);
-  const kind = B.round === 0 ? 'guitar' : 'dance', bars = 12, notes = [];
+  const i = S.stop, rnd = mulberry(500 + i * 31 + B.round * 7 + B.attempt * 3);
+  const kind = ['guitar', 'dance', 'lyrics'][B.round], track = genreTrack(S.style, S.stop + B.round, kind), beat = 60 / track.bpm, lead = 2.4, a = audio();
+  const common = { kind, track, beat, si: -8, t0: now() + lead, a0: a ? a.currentTime + lead : 0, score: 0, combo: 0, best: 0, perf: 0, good: 0, miss: 0, fb: null,
+    flash: [0, 0, 0, 0], pulse: 0, over: false, overT: 0, lastBeat: -1, crowdJump: 0, rush: 0, recent: [], moodHold: 0 };
+  parts = []; pops = [];
+  if (kind === 'lyrics') {
+    const song = SONGS[i % SONGS.length];
+    const lines = song.lines.map(L => { const chips = [...L.ans, ...L.x]; for (let k = chips.length - 1; k > 0; k--) { const j = Math.floor(rnd() * (k + 1)); [chips[k], chips[j]] = [chips[j], chips[k]]; } return { ...L, chips }; });
+    Object.assign(B, common, { bars: 100000, mel: null, notes: [], dur: 1e9, hype: 0, song, lines, li: 0,
+      ly: { phase: 'wait', sel: [], tLeft: 0, tMax: Math.max(10, 16 - i * 0.6), result: null, phaseT: 0, display: '', words: [], wordsAt: 0, wordStep: beat },
+      rival: Math.round(lines.length * (450 + 55 * i) * (B.attempt ? 0.94 : 1)) });
+    $('controlsHint').innerHTML = 'Listen to the line, tap the words that come next in the right order (or press <kbd>1</kbd> to <kbd>6</kbd>), then press <b>Sing it!</b> (<kbd>Enter</kbd>). <kbd>Backspace</kbd> undoes a word.';
+    return;
+  }
+  const bars = 12, notes = [];
   const dens = 0.32 + i * 0.045; let lane = Math.floor(rnd() * 4);
-  for (let s = 8; s < bars * 8; s++) {
-    const on = s % 2 === 0; let pr = on ? dens + 0.25 : dens * 0.55; if (kind === 'dance' && !on) pr *= 0.5;
-    if (s % 32 === 30 || s % 32 === 31) pr *= 0.3;
+  for (let st = 8; st < bars * 8; st++) {
+    const on = st % 2 === 0; let pr = on ? dens + 0.25 : dens * 0.55; if (kind === 'dance' && !on) pr *= 0.5;
+    if (st % 32 === 30 || st % 32 === 31) pr *= 0.3;
     if (rnd() < pr) {
       const mv = rnd(); lane = mv < 0.3 ? lane : (lane + (mv < 0.6 ? 1 : mv < 0.85 ? 3 : 2)) % 4;
-      const tt = s * beat / 2; notes.push({ t: tt, lane });
+      const tt = st * beat / 2; notes.push({ t: tt, lane });
       if (i >= 3 && on && rnd() < 0.05 + i * 0.02) notes.push({ t: tt, lane: (lane + 2) % 4 });
     }
   }
-  const lead = 2.4;
-  const a = audio();
-  Object.assign(B, { kind, notes, beat, bars, si: -8, mel: makeMelody(S.style + S.stop + B.round), hype: B.hype || 0, rush: 0, dur: bars * 4 * beat, t0: now() + lead, a0: a ? a.currentTime + lead : 0,
-    score: 0, combo: 0, best: 0, perf: 0, good: 0, miss: 0, fb: null, flash: [0, 0, 0, 0], pulse: 0, over: false, overT: 0,
-    rival: Math.round(notes.length * (60 + 22 * i) * (B.attempt ? 0.94 : 1)), lastBeat: -1, crowdJump: 0 });
-  parts = []; pops = [];
+  Object.assign(B, common, { bars, mel: makeMelody(S.style + S.stop + B.round), notes, dur: bars * 4 * beat, hype: B.hype || 0,
+    rival: Math.round(notes.length * (60 + 22 * i) * (B.attempt ? 0.94 : 1)) });
   $('controlsHint').innerHTML = kind === 'guitar' ? 'Hit <kbd>D</kbd> <kbd>F</kbd> <kbd>J</kbd> <kbd>K</kbd> as the notes reach the line. Fill the meter, then <kbd>Space</kbd> for Sugar Rush. On touch screens tap the lanes, and tap the crowd for Sugar Rush.' : 'Hit <kbd>←</kbd> <kbd>↓</kbd> <kbd>↑</kbd> <kbd>→</kbd> as the arrows reach the line. Fill the meter, then <kbd>Space</kbd> for Sugar Rush. On touch screens tap the lanes, and tap the crowd for Sugar Rush.';
 }
 function schedule() {
   if (!actx || muted) return;
-  const horizon = actx.currentTime + 0.2, hs = B.beat / 2, st = STYLES[S.style];
+  const horizon = actx.currentTime + 0.2, hs = B.beat / 2;
+  if (B.a0 + B.si * hs < actx.currentTime - 0.5) B.si = Math.ceil((actx.currentTime - B.a0) / hs);
   while (B.si < B.bars * 8 && B.a0 + B.si * hs < horizon) {
     const at = B.a0 + B.si * hs;
     if (at >= actx.currentTime - 0.02) {
       if (B.si < 0) { if (B.si % 2 === 0) tone(B.si === -8 ? 1600 : 1100, B.si === -8 ? 1600 : 1100, 0.05, 'square', 0.05, at); }
-      else playStep(st, B.si, at, B.mel, B.rush > 0 ? 0.75 : 0.6);
+      else playStep(B.track, B.si, at, B.mel, B.kind === 'lyrics' ? 0.5 : B.rush > 0 ? 0.75 : 0.6);
     }
     B.si++;
   }
@@ -1311,7 +1534,7 @@ function windows() {
 }
 function gearMult() { return B.kind === 'guitar' ? GEAR.guitar[S.gear.guitar].mult : GEAR.shoes[S.gear.shoes].mult; }
 function hitLane(l) {
-  if (mode !== 'battle' || B.over) return;
+  if (mode !== 'battle' || B.over || B.kind === 'lyrics') return;
   const tn = now() - B.t0, w = windows();
   B.flash[l] = 1;
   let best = null;
@@ -1324,15 +1547,16 @@ function hitLane(l) {
   B.score += Math.round((perfect ? 100 : 60) * cm * gearMult() * (B.rush > 0 ? 2 : 1));
   if (B.rush <= 0) { const was = B.hype; B.hype = Math.min(1, B.hype + (perfect ? 0.045 : 0.028) * (1 + 0.04 * effVocals())); if (was < 1 && B.hype >= 1) popText(W / 2, geom().hitY - 150, 'Sugar Rush ready!', '#ffc21a'); }
   perfect ? B.perf++ : B.good++;
+  B.recent.push(perfect ? 1 : 0.75); if (B.recent.length > 10) B.recent.shift();
   B.fb = { s: perfect ? 'Perfect!' : 'Good', c: perfect ? '#ffc21a' : '#7fe08a', life: 0.6 };
   B.pulse = 1;
-  const st = STYLES[S.style], bar = Math.max(0, Math.floor(tn / (4 * B.beat))), ch = st.chords[bar % 4];
-  tone(midi(ch[l] + 12), midi(ch[l] + 12), B.beat * 0.8, st.lead, 0.07);
+  const bar = Math.max(0, Math.floor(tn / (4 * B.beat))), ch = chordAt(B.track, bar);
+  if (actx) play(B.track.hit || 'pluck', ch[l] + 12, actx.currentTime, B.beat * 0.8, 0.13);
   const g = geom(); burst(g.lx(l), g.hitY, LANE[l], perfect ? 12 : 6, perfect ? 220 : 140, 300);
   if (B.combo % 10 === 0) { B.crowdJump = 1; popText(W / 2, g.hitY - 120, `${B.combo} combo! ×${Math.min(4, 1 + B.combo / 10)}`, '#ff4f8b'); confetti(g.lx(l), g.hitY, 18); }
 }
 function sugarRush() {
-  if (mode !== 'battle' || B.over || B.rush > 0 || B.hype < 1) return;
+  if (mode !== 'battle' || B.over || B.kind === 'lyrics' || B.rush > 0 || B.hype < 1) return;
   B.rush = 8; B.crowdJump = 1; shake = reduceMotion ? 0 : 0.2;
   if (audio() && !muted) { noise(actx.currentTime, 0.9, 0.12, 900); tone(300, 1800, 0.6, 'sawtooth', 0.05); }
   popText(W / 2, geom().hitY - 150, 'SUGAR RUSH! ×2', '#ff4f8b'); confetti(W / 2, H * 0.5, 70);
@@ -1341,24 +1565,107 @@ function geom() {
   const hw = Math.min(400, W * 0.46), x0 = W / 2 - hw / 2, lw = hw / 4;
   return { hw, x0, lw, hitY: H - 86, lx: l => x0 + lw * l + lw / 2 };
 }
+function endRound() {
+  B.over = true; B.overT = 0; $('lyricBox').hidden = true;
+  const bonus = Math.round(B.score * 0.04 * effVocals()); B.bonus = bonus; B.score += bonus;
+  B.rounds.push({ kind: B.kind, score: B.score, rival: B.rival, bonus });
+  const weight = B.kind === 'lyrics' ? 10 : 1, count = B.kind === 'lyrics' ? B.lines.length : B.notes.length;
+  B.total += B.score; B.rivalTotal += B.rival; B.hits += (B.perf + B.good * 0.6) * weight; B.noteCount += count * weight; B.perfects += B.perf;
+  if (B.score >= B.rival) { sfx.cheer(); confetti(W * 0.2, H * 0.5, 50); } else sfx.sad();
+}
 function updateBattle(dt) {
   t += dt; schedule();
-  const tn = now() - B.t0, w = windows();
-  for (const n of B.notes) { if (!n.done && tn - n.t > w.good) { n.done = true; n.miss = true; B.miss++; if (B.combo >= 5) sfx.miss(); B.combo = 0; if (B.rush <= 0) B.hype = Math.max(0, B.hype - 0.03); B.fb = { s: 'Miss', c: '#ff8fa8', life: 0.5 }; } }
-  if (B.rush > 0) { B.rush -= dt; if (B.rush <= 0) B.hype = 0; }
+  const tn = now() - B.t0;
   B.flash = B.flash.map(f => Math.max(0, f - dt * 5)); B.pulse = Math.max(0, B.pulse - dt * 4); B.crowdJump = Math.max(0, B.crowdJump - dt * 1.5);
   if (B.fb) { B.fb.life -= dt; if (B.fb.life <= 0) B.fb = null; }
-  const beatN = Math.floor(tn / B.beat); if (beatN !== B.lastBeat) { B.lastBeat = beatN; B.onBeat = 1; } else B.onBeat = Math.max(0, (B.onBeat || 0) - dt * 4);
-  stepParts(dt);
-  if (!B.over && tn > B.dur + 0.6) {
-    B.over = true; B.overT = 0;
-    const bonus = Math.round(B.score * 0.04 * effVocals()); B.bonus = bonus; B.score += bonus;
-    B.rounds.push({ kind: B.kind, score: B.score, rival: B.rival, bonus });
-    B.total += B.score; B.rivalTotal += B.rival; B.hits += B.perf + B.good * 0.6; B.notes += B.notes.length; B.perfects += B.perf;
-    (B.score >= B.rival ? sfx.cheer : sfx.sad)();
-    if (B.score >= B.rival) confetti(W * 0.2, H * 0.5, 50);
+  const beatN = Math.floor(tn / B.beat), newBeat = beatN !== B.lastBeat;
+  if (newBeat) { B.lastBeat = beatN; B.onBeat = 1; } else B.onBeat = Math.max(0, (B.onBeat || 0) - dt * 4);
+  // crowd mood: claps and dances when it's going well, boos when notes keep getting missed
+  if (B.kind !== 'lyrics') {
+    const r = B.recent, target = r.length < 4 ? 0.3 : clamp((r.reduce((a, b) => a + b, 0) / r.length - 0.55) * 3, -1, 1);
+    B.mood += (target - B.mood) * Math.min(1, dt * 2.5);
+  } else if (B.moodHold > 0) B.moodHold -= dt; else B.mood += (0.2 - B.mood) * Math.min(1, dt * 0.8);
+  const state = B.mood > 0.45 ? 'love' : B.mood < -0.35 ? 'boo' : 'ok';
+  if (state !== B.crowdState && tn > 0 && !B.over) {
+    B.crowdState = state;
+    if (B.kind !== 'lyrics') { if (state === 'love') popText(W / 2, H * 0.34, 'The crowd loves it!', '#7fe08a'); if (state === 'boo') popText(W / 2, H * 0.34, 'Uh oh, they\'re booing! Hit those notes!', '#ff8fa8'); }
   }
-  if (B.over) { B.overT += dt; if (B.overT > 3.2) { if (B.round === 0) { B.round = 1; startRound(); } else finishBattle(); } }
+  if (newBeat && tn > 0 && !B.over && actx) {
+    if (state === 'love' && beatN % 2 === 1) clap(actx.currentTime, 0.55);
+    if (state === 'boo' && beatN % 4 === 0) { sfx.boo(); for (let k = 0; k < 3; k++) B.boos.push({ x: rand(30, W - 30), y: H - rand(40, 90), life: 1.6 }); }
+  }
+  for (const b of B.boos) { b.life -= dt; b.y -= 22 * dt; }
+  B.boos = B.boos.filter(b => b.life > 0);
+  stepParts(dt);
+  if (B.kind === 'lyrics') { if (!B.over && tn > 0) updateLyrics(dt); }
+  else {
+    const w = windows();
+    for (const n of B.notes) { if (!n.done && tn - n.t > w.good) { n.done = true; n.miss = true; B.miss++; if (B.combo >= 5) sfx.miss(); B.combo = 0; B.recent.push(0); if (B.recent.length > 10) B.recent.shift(); if (B.rush <= 0) B.hype = Math.max(0, B.hype - 0.03); B.fb = { s: 'Miss', c: '#ff8fa8', life: 0.5 }; } }
+    if (B.rush > 0) { B.rush -= dt; if (B.rush <= 0) B.hype = 0; }
+    if (!B.over && tn > B.dur + 0.6) endRound();
+  }
+  if (B.over) { B.overT += dt; if (B.overT > 3.2) { if (B.round < 2) { B.round++; startRound(); } else finishBattle(); } }
+  if (B.kind === 'lyrics' && !B.over) { const L = B.ly, el = $('lyTime'); if (el) el.style.width = (L.phase === 'choose' ? clamp(L.tLeft / L.tMax, 0, 1) * 100 : L.phase === 'intro' ? 100 : 0) + '%'; }
+}
+/* ----- lyrics round ----- */
+function nextBarAt() { if (!actx) return aNow() + 0.2; const bl = B.beat * 4; return B.a0 + Math.ceil((actx.currentTime - B.a0 + 0.08) / bl) * bl; }
+function updateLyrics(dt) {
+  const L = B.ly; L.phaseT += dt;
+  if (L.phase === 'wait') {
+    const line = B.lines[B.li], words = line.pre.replace(/,/g, '').split(/\s+/), at = nextBarAt();
+    L.words = words; L.wordsAt = at; L.wordStep = words.length > 8 ? B.beat / 2 : B.beat; L.display = line.pre;
+    L.introEnd = singLine(S.leader, words, at, B.track, { a0: B.a0, contour: B.li });
+    if (!actx || muted) L.introEnd = aNow() + 2;
+    L.phase = 'intro'; L.phaseT = 0; renderLyricBox();
+  } else if (L.phase === 'intro') {
+    if (aNow() >= L.introEnd - 0.2 || L.phaseT > 9) { L.phase = 'choose'; L.tLeft = L.tMax; L.phaseT = 0; renderLyricBox(); }
+  } else if (L.phase === 'choose') {
+    L.tLeft -= dt; if (L.tLeft <= 0) lySubmit(true);
+  } else if (L.phase === 'sing') {
+    if (L.phaseT > L.singDur + 1.4) {
+      B.li++;
+      if (B.li >= B.lines.length) endRound(); else { L.phase = 'wait'; L.sel = []; L.result = null; }
+    }
+  }
+}
+function renderLyricBox() {
+  const box = $('lyricBox');
+  if (!B || B.kind !== 'lyrics' || B.over || !['intro', 'choose'].includes(B.ly.phase) || mode !== 'battle') { box.hidden = true; return; }
+  box.hidden = false;
+  const line = B.lines[B.li], L = B.ly, chosen = L.sel.map(k => line.chips[k]);
+  const blanks = line.ans.map((_, k) => chosen[k] ? `<b class="fill">${esc(chosen[k])}</b>` : '<span class="blank">_____</span>').join(' ');
+  $('lyLine').innerHTML = `<span class="lyno">${esc(B.song.title)} · line ${B.li + 1} of ${B.lines.length}</span>${esc(line.pre)} ${blanks}`;
+  $('lyChips').innerHTML = line.chips.map((w, k) => `<button class="chip" data-k="${k}" ${L.sel.includes(k) || L.sel.length >= line.ans.length ? 'disabled' : ''}><kbd>${k + 1}</kbd> ${esc(w)}</button>`).join('');
+  const ready = L.phase === 'choose' && L.sel.length === line.ans.length;
+  $('lySing').disabled = !ready;
+  $('lySing').textContent = L.phase === 'intro' ? 'Listen…' : 'Sing it!';
+  $('lyHint').textContent = L.phase === 'intro' ? `${CH(S.leader).name} is singing. Pick the ${line.ans.length} words that come next.` : L.sel.length < line.ans.length ? `Pick ${line.ans.length - L.sel.length} more word${line.ans.length - L.sel.length === 1 ? '' : 's'}.` : 'Ready! Press Sing it!';
+}
+function lyPick(k) { if (mode !== 'battle' || !B || B.kind !== 'lyrics') return; const L = B.ly, line = B.lines[B.li]; if (!['intro', 'choose'].includes(L.phase) || k >= line.chips.length || L.sel.includes(k) || L.sel.length >= line.ans.length) return; L.sel.push(k); sfx.note(); renderLyricBox(); }
+function lyUndo() { if (!B || B.kind !== 'lyrics') return; B.ly.sel.pop(); renderLyricBox(); }
+function lySubmit(timeout) {
+  if (!B || B.kind !== 'lyrics') return;
+  const L = B.ly, line = B.lines[B.li];
+  if (L.phase !== 'choose' || (!timeout && L.sel.length !== line.ans.length)) return;
+  const sel = L.sel.map(k => line.chips[k]);
+  const exact = sel.length === line.ans.length && sel.every((w, k) => w === line.ans[k]);
+  const nice = !exact && sel.length > 0 && sel[sel.length - 1] === line.ans[line.ans.length - 1];
+  const res = exact ? 'perfect' : nice ? 'nice' : 'boo';
+  const pts = exact ? 700 + Math.round(300 * clamp(L.tLeft / L.tMax, 0, 1)) : nice ? 350 : 0;
+  B.score += pts; if (exact) B.perf++; else if (nice) B.good++; else B.miss++;
+  L.result = res; L.phase = 'sing'; L.phaseT = 0;
+  const sung = sel.length ? sel : ['la', 'la', 'la'];
+  const at = aNow() + 0.15, words = [...line.pre.replace(/,/g, '').split(/\s+/), ...sung];
+  L.words = words; L.wordsAt = at; L.wordStep = words.length > 8 ? B.beat / 2 : B.beat; L.display = line.pre + ' ' + sung.join(' ');
+  const choir = res === 'perfect' ? bandmates().map(c => c.id).slice(0, 4) : null;
+  const endAt = singLine(S.leader, words, at, B.track, { a0: B.a0, contour: B.li, choir });
+  L.singDur = (actx && !muted) ? endAt - aNow() : 2.5;
+  B.moodHold = L.singDur + 1.5;
+  if (res === 'perfect') { B.mood = 1; B.crowdJump = 1; B.fb = { s: 'Perfect lyric!', c: '#ffc21a', life: 1.6 }; confetti(W / 2, H * 0.4, 40); if (actx) { noise(endAt, 1.2, 0.08, 1200); for (let k = 0; k < 6; k++) clap(endAt + k * 0.17, 0.6); } }
+  else if (res === 'nice') { B.mood = 0.55; B.fb = { s: 'Nice try! It rhymes!', c: '#7fe08a', life: 1.6 }; if (actx) for (let k = 0; k < 4; k++) clap(endAt + k * 0.2, 0.5); }
+  else { B.mood = -1; B.fb = { s: sel.length ? 'Boo! That\'s not it!' : 'Too slow! Boo!', c: '#ff8fa8', life: 1.8 }; sfx.boo(actx ? endAt - 0.4 : 0); for (let k = 0; k < 6; k++) B.boos.push({ x: rand(30, W - 30), y: H - rand(40, 100), life: 2.2 }); }
+  popText(W / 2, H * 0.52, `+${pts}`, res === 'boo' ? '#ff8fa8' : '#ffc21a');
+  renderLyricBox();
 }
 function drawBattle() {
   ctx.setTransform(scale, 0, 0, scale, 0, 0);
@@ -1387,14 +1694,31 @@ function drawBattle() {
       }
     }
   }
-  // crowd
-  const crowdN = Math.min(70, 10 + Math.floor(Math.log2(1 + S.fans) * 5));
+  // crowd: dances and claps when happy, sings along to perfect lyrics, boos when it's going badly
+  const crowdN = Math.min(70, 10 + Math.floor(Math.log2(1 + S.fans) * 5)), mood = B.mood || 0;
+  const singing = B.kind === 'lyrics' && B.ly && B.ly.phase === 'sing' && B.ly.result === 'perfect';
   for (let k = 0; k < crowdN; k++) {
-    const x = (k * 97) % (W + 40) - 20, row = k % 3, y = H - 10 - row * 18;
-    const jump = (Math.abs(Math.sin((bp + k * 0.17) * Math.PI)) * 6 + B.crowdJump * 18 * (0.5 + (k % 5) / 8));
-    ctx.fillStyle = shade(BEAN[k % 7], -30 - row * 25); ctx.beginPath(); ctx.arc(x, y - jump, 14 - row * 2, 0, Math.PI * 2); ctx.fill();
-    if ((k + Math.floor(t * 2)) % 4 === 0) { ctx.strokeStyle = ctx.fillStyle; ctx.lineWidth = 4; ctx.lineCap = 'round'; ctx.beginPath(); ctx.moveTo(x - 8, y - jump - 6); ctx.lineTo(x - 14, y - jump - 22); ctx.moveTo(x + 8, y - jump - 6); ctx.lineTo(x + 14, y - jump - 22); ctx.stroke(); }
+    const x = (k * 97) % (W + 40) - 20, row = k % 3, y = H - 10 - row * 18, r = 14 - row * 2;
+    const happy = mood > 0.45, booing = mood < -0.35;
+    const jump = booing ? 0 : (Math.abs(Math.sin((bp + k * 0.17) * Math.PI)) * (happy ? 12 : 5) + B.crowdJump * 18 * (0.5 + (k % 5) / 8));
+    const sway = singing ? Math.sin(t * 3 + k * 0.4) * 6 : 0, cx = x + sway, cy = y - jump;
+    const col = shade(BEAN[k % 7], -30 - row * 25);
+    ctx.strokeStyle = col; ctx.lineWidth = 4; ctx.lineCap = 'round'; ctx.beginPath();
+    if (singing) { ctx.moveTo(cx - 8, cy - 6); ctx.lineTo(cx - 14 + sway, cy - 26); ctx.moveTo(cx + 8, cy - 6); ctx.lineTo(cx + 14 + sway, cy - 26); }
+    else if (happy) { const c = ob > 0.5 && B.lastBeat % 2 === 1 ? 2 : 9; ctx.moveTo(cx - 8, cy - 6); ctx.lineTo(cx - c, cy - 24); ctx.moveTo(cx + 8, cy - 6); ctx.lineTo(cx + c, cy - 24); }
+    else if (booing) { ctx.moveTo(cx - 9, cy + 2); ctx.lineTo(cx - 15, cy + 12); ctx.moveTo(cx + 9, cy + 2); ctx.lineTo(cx + 15, cy + 12); }
+    else if ((k + Math.floor(t * 2)) % 4 === 0) { ctx.moveTo(cx - 8, cy - 6); ctx.lineTo(cx - 14, cy - 22); ctx.moveTo(cx + 8, cy - 6); ctx.lineTo(cx + 14, cy - 22); }
+    ctx.stroke();
+    if (singing && k % 3 === 0) { ctx.strokeStyle = `hsl(${(k * 40 + t * 120) % 360},100%,65%)`; ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(cx - 14 + sway, cy - 26); ctx.lineTo(cx - 16 + sway, cy - 40); ctx.stroke(); }
+    ctx.fillStyle = col; ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.fill();
+    if (row === 0) {
+      ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(cx - 4, cy - 3, 2.2, 0, Math.PI * 2); ctx.arc(cx + 4, cy - 3, 2.2, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.beginPath();
+      if (booing) ctx.arc(cx, cy + 7, 4, Math.PI + 0.4, -0.4); else if (singing) ctx.ellipse(cx, cy + 4, 3, 4, 0, 0, Math.PI * 2); else ctx.arc(cx, cy + 2, 4.5, 0.3, Math.PI - 0.3);
+      ctx.stroke();
+    }
   }
+  if (singing && Math.random() < 0.3) parts.push({ x: rand(0, W), y: H - 60, vx: rand(-20, 20), vy: -rand(60, 120), life: 1.6, max: 1.6, c: BEAN[Math.floor(rand(0, 7))], r: 4, g: 0 });
   // player band (left)
   const leftX = g.x0 / 2, sideH = Math.min(150, g.x0 * 1.1);
   const mates = bandmates();
@@ -1411,15 +1735,17 @@ function drawBattle() {
     else if (move === 1) { ly -= hopL * 30; sy = 1 + hopL * 0.1; sx = 1 - hopL * 0.08; }
     else if (move === 2) { sx = Math.cos(ph2 * Math.PI * 2); ly -= hopL * 12; }
     else { rot = Math.sin(t * 14) * 0.15; ly -= hopL * 8; sx = 1 + Math.sin(t * 14) * 0.05; }
-  } else { rot = -0.12 + Math.sin(tn / B.beat * Math.PI) * 0.08; ly -= hopL * 12; sy = 1 + ob * 0.05; sx = 1 - ob * 0.04; }
+  } else if (B.kind === 'lyrics') { rot = Math.sin(tn / B.beat * Math.PI / 2) * 0.08; ly -= hopL * 8; sy = 1 + ob * 0.04; sx = 1 - ob * 0.03; if (B.ly.result === 'boo' && B.ly.phase === 'sing') { rot = 0.15; ly += 6; } }
+  else { rot = -0.12 + Math.sin(tn / B.beat * Math.PI) * 0.08; ly -= hopL * 12; sy = 1 + ob * 0.05; sx = 1 - ob * 0.04; }
   sx *= 1 + B.pulse * 0.1; sy *= 1 - B.pulse * 0.06;
   if (B.crowdJump > 0.5) ly -= (B.crowdJump - 0.5) * 80;
   if (Math.abs(sx) < 0.08) sx = 0.08 * Math.sign(sx || 1);
-  const lpose = B.kind === 'dance' ? dancePose(tn / B.beat, Math.floor(tn / (B.beat * 4)) % 4) : { lL: 0.12, lR: -0.12, lLy: 0, lRy: -Math.abs(Math.sin(tn / B.beat * Math.PI)) * 0.04, aL: 0.1 + B.pulse * 0.3, aR: -0.2 - B.pulse * 0.5 };
-  drawJelly(S.leader, lx, ly, sideH, { rot, sx, sy, hat: S.look, hatCol: S.col, guitar: B.kind === 'guitar' ? S.col : null, strum: B.pulse, pose: lpose });
+  const lpose = B.kind === 'lyrics' ? (B.ly.phase === 'sing' && B.ly.result === 'perfect' ? dancePose(tn / B.beat, 1) : B.ly.result === 'boo' && B.ly.phase === 'sing' ? { lL: 0, lR: 0, lLy: 0, lRy: 0, aL: -0.2, aR: 0.2 } : idlePose(tn / B.beat)) : B.kind === 'dance' ? dancePose(tn / B.beat, Math.floor(tn / (B.beat * 4)) % 4) : { lL: 0.12, lR: -0.12, lLy: 0, lRy: -Math.abs(Math.sin(tn / B.beat * Math.PI)) * 0.04, aL: 0.1 + B.pulse * 0.3, aR: -0.2 - B.pulse * 0.5 };
+  drawJelly(S.leader, lx, ly, sideH, { rot, sx, sy, hat: S.look, hatCol: S.col, guitar: B.kind === 'guitar' ? S.col : null, mic: B.kind === 'lyrics', strum: B.pulse, pose: lpose });
   // rival band (right)
-  const rx = g.x0 + g.hw + g.x0 / 2, losing = (B.total + B.score) > (B.rivalTotal + B.rival * clamp(tn / B.dur, 0, 1));
+  const rx = g.x0 + g.hw + g.x0 / 2, losing = (B.total + B.score) > (B.rivalTotal + B.rival * roundProgress(tn));
   for (let k = 0; k < 3; k++) drawRival(rx + (k - 1) * sideH * 0.42, H - 130 + (k === 1 ? 10 : 0), sideH * (k === 1 ? 0.62 : 0.5), R0.col, k, (bp + k * 0.3) % 1, losing ? -1 : 1);
+  if (B.kind !== 'lyrics') {
   // highway
   ctx.fillStyle = 'rgba(10,5,20,.6)'; rr(g.x0, 0, g.hw, H, 0); ctx.fill();
   for (let l = 0; l < 4; l++) {
@@ -1460,21 +1786,24 @@ function drawBattle() {
   ctx.font = '900 12px Nunito, sans-serif'; ctx.fillStyle = '#fff'; ctx.textAlign = 'center';
   const hl = B.rush > 0 ? 'SUGAR RUSH ×2' : B.hype >= 1 ? (Math.floor(t * 4) % 2 ? 'Press SPACE or tap the crowd!' : 'SUGAR RUSH READY!') : 'Sugar Rush meter';
   ctx.fillText(hl, W / 2, my + 24); ctx.textAlign = 'left';
+  } else drawKaraoke(tn, g);
+  for (const b of B.boos) { ctx.globalAlpha = Math.min(1, b.life * 2); ctx.fillStyle = '#fff'; rr(b.x - 26, b.y - 14, 52, 26, 12); ctx.fill(); ctx.beginPath(); ctx.moveTo(b.x - 4, b.y + 12); ctx.lineTo(b.x + 2, b.y + 20); ctx.lineTo(b.x + 6, b.y + 12); ctx.fill(); ctx.fillStyle = '#c0392b'; ctx.font = '900 15px Nunito, sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText('BOO!', b.x, b.y); ctx.globalAlpha = 1; }
+  ctx.textAlign = 'left';
   // scoreboard
-  const yourNow = B.total + B.score, rivNow = Math.round(B.rivalTotal + (B.over ? 0 : B.rival * clamp(tn / B.dur, 0, 1)));
+  const yourNow = B.total + B.score, rivNow = Math.round(B.rivalTotal + (B.over ? 0 : B.rival * roundProgress(tn)));
   const maxv = Math.max(1, yourNow, rivNow, (B.rivalTotal + B.rival));
   const bw = Math.min(260, W * 0.36);
   scoreBar(12, 14, bw, S.band, yourNow, maxv, '#ff4f8b', 'left');
   scoreBar(W - 12 - bw, 14, bw, R0.band, rivNow, maxv, R0.col, 'right');
   ctx.textAlign = 'center'; ctx.fillStyle = '#fff'; ctx.font = '900 14px Nunito, sans-serif';
-  ctx.fillText(`Round ${B.round + 1} of 2 · ${B.kind === 'guitar' ? 'Guitar' : 'Dance'}`, W / 2, 22);
-  const prog = clamp(tn / B.dur, 0, 1); ctx.fillStyle = 'rgba(255,255,255,.15)'; rr(W / 2 - 70, 34, 140, 6, 3); ctx.fill(); ctx.fillStyle = '#ffc21a'; rr(W / 2 - 70, 34, 140 * prog, 6, 3); ctx.fill();
+  ctx.fillText(`Round ${B.round + 1} of 3 · ${{ guitar: 'Guitar', dance: 'Dance', lyrics: 'Lyrics' }[B.kind]}`, W / 2, 22);
+  const prog = roundProgress(tn); ctx.fillStyle = 'rgba(255,255,255,.15)'; rr(W / 2 - 70, 34, 140, 6, 3); ctx.fill(); ctx.fillStyle = '#ffc21a'; rr(W / 2 - 70, 34, 140 * prog, 6, 3); ctx.fill();
   // countdown
   if (tn < 0) {
     const n = Math.ceil(-tn), f = -tn % 1;
     ctx.save(); ctx.translate(W / 2, H * 0.42); ctx.scale(1 + f * 0.6, 1 + f * 0.6);
     ctx.font = '900 64px Fraunces, Georgia, serif'; ctx.lineWidth = 10; ctx.strokeStyle = '#1d0f33'; ctx.fillStyle = '#ffc21a';
-    const txt = n > 2 ? (B.kind === 'guitar' ? 'Guitar round!' : 'Dance round!') : String(n);
+    const txt = n > 2 ? ({ guitar: 'Guitar round!', dance: 'Dance round!', lyrics: 'Lyrics round!' }[B.kind]) : String(n);
     if (n > 2) ctx.font = '900 40px Fraunces, Georgia, serif';
     ctx.strokeText(txt, 0, 0); ctx.fillText(txt, 0, 0); ctx.restore();
   }
@@ -1488,6 +1817,38 @@ function drawBattle() {
     ctx.fillText(`Vocal power bonus +${B.bonus.toLocaleString()}`, W / 2, H * 0.28 + 106);
     ctx.globalAlpha = 1;
   }
+  ctx.textAlign = 'left';
+}
+function roundProgress(tn) { return B.kind === 'lyrics' ? clamp((B.li + (B.ly.phase === 'sing' ? 0.5 : 0)) / B.lines.length, 0, 1) : clamp(tn / B.dur, 0, 1); }
+function drawKaraoke(tn, g) {
+  const L = B.ly; if (!L) return;
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.font = '900 13px Nunito, sans-serif'; ctx.fillStyle = 'rgba(255,255,255,.75)';
+  ctx.fillText(`♪ ${B.song.title} ♪`, W / 2, 56);
+  if (tn < 0) return;
+  const y = H * 0.24, words = L.words || [], at = L.wordsAt || 0, cur = Math.floor((aNow() - at) / (L.wordStep || B.beat));
+  if ((L.phase === 'intro' || L.phase === 'sing') && words.length) {
+    ctx.font = `900 ${Math.min(30, W / (words.join(' ').length * 0.55))}px Fraunces, Georgia, serif`;
+    const full = words.join(' '), total = ctx.measureText(full).width; let x = W / 2 - total / 2;
+    words.forEach((w, k) => {
+      const ww = ctx.measureText(w).width, sp = ctx.measureText(' ').width;
+      const done = k <= cur, isCur = k === cur;
+      ctx.lineWidth = 6; ctx.strokeStyle = '#1d0f33'; ctx.fillStyle = done ? (L.phase === 'sing' && L.result === 'boo' ? '#ff8fa8' : '#ffc21a') : '#ffffff';
+      ctx.textAlign = 'left'; ctx.strokeText(w, x, y); ctx.fillText(w, x, y);
+      if (isCur) { const bph = ((aNow() - at) / (L.wordStep || B.beat)) % 1; ctx.fillStyle = '#ff4f8b'; ctx.beginPath(); ctx.arc(x + ww / 2, y - 30 - Math.sin(bph * Math.PI) * 14, 7, 0, Math.PI * 2); ctx.fill(); }
+      x += ww + sp;
+    });
+    ctx.textAlign = 'center';
+  } else if (L.phase === 'choose') {
+    ctx.font = '900 30px Fraunces, Georgia, serif'; ctx.lineWidth = 6; ctx.strokeStyle = '#1d0f33'; ctx.fillStyle = '#ffffff';
+    ctx.strokeText('What comes next?', W / 2, y); ctx.fillText('What comes next?', W / 2, y);
+    const r = 22, fr = clamp(L.tLeft / L.tMax, 0, 1);
+    ctx.lineWidth = 6; ctx.strokeStyle = 'rgba(255,255,255,.2)'; ctx.beginPath(); ctx.arc(W / 2, y + 52, r, 0, Math.PI * 2); ctx.stroke();
+    ctx.strokeStyle = fr < 0.3 ? '#ff4f8b' : '#ffc21a'; ctx.beginPath(); ctx.arc(W / 2, y + 52, r, -Math.PI / 2, -Math.PI / 2 + fr * Math.PI * 2); ctx.stroke();
+    ctx.font = '900 16px Nunito, sans-serif'; ctx.fillStyle = '#fff'; ctx.fillText(Math.ceil(L.tLeft), W / 2, y + 53);
+  }
+  drawParts();
+  if (B.fb) { ctx.globalAlpha = Math.min(1, B.fb.life * 2); ctx.font = '900 30px Fraunces, Georgia, serif'; ctx.lineWidth = 6; ctx.strokeStyle = '#1d0f33'; ctx.fillStyle = B.fb.c; ctx.strokeText(B.fb.s, W / 2, H * 0.4); ctx.fillText(B.fb.s, W / 2, H * 0.4); ctx.globalAlpha = 1; }
   ctx.textAlign = 'left';
 }
 function arrow(x, y, r, lane, fill) {
@@ -1506,7 +1867,7 @@ function scoreBar(x, y, w, label, v, max, col, align) {
 }
 function finishBattle() {
   setMode('battledone');
-  const i = S.stop, won = B.total >= B.rivalTotal, acc = B.hits / Math.max(1, B.notes);
+  const i = S.stop, won = B.total >= B.rivalTotal, acc = B.hits / Math.max(1, B.noteCount);
   const grade = acc >= 0.93 ? 'S' : acc >= 0.82 ? 'A' : acc >= 0.68 ? 'B' : 'C';
   const fee = S.manager ? S.manager.fee : 0;
   const prize = won ? 50 + 25 * i : 15, coins = Math.round(prize * (1 - fee / 100));
@@ -1534,6 +1895,8 @@ function finishBattle() {
     <p class="muted">${mate.name}: “So close! Some training or new gear at Band HQ would help.”</p>
     <div class="row" style="justify-content:center"><button class="go" id="bRetry">Battle again</button><button class="go alt" id="bHQ">Go to Band HQ</button></div>`;
   $('ovBattle').hidden = false;
+  say(mate.id, won ? (grade === 'S' || grade === 'A' ? 'That was amazing! You really led from the front!' : 'We did it! Next time, even bigger!') : 'So close! Let\'s train and try again!', 1, 600);
+  musicPlay(won ? 'win' + i : 'lose' + i, won ? TRACKS.finale : TRACKS.hq, 0.5);
   if (won) { $('bNext').focus(); $('bNext').onclick = () => { $('ovBattle').hidden = true; show(i === 9 ? 'finale' : 'map'); }; }
   else { $('bRetry').focus(); $('bRetry').onclick = () => { $('ovBattle').hidden = true; startBattle(B.attempt + 1); }; $('bHQ').onclick = () => { $('ovBattle').hidden = true; hqTab = 'train'; show('hq'); }; }
 }
@@ -1566,7 +1929,7 @@ function show(name) {
   screen = name;
   SCREENS.forEach(s => $('scr-' + s).hidden = s !== name);
   $('statStrip').hidden = !S || name === 'story' || name === 'create';
-  if (name !== 'play') { setMode('idle'); musicStop(); $('ovPlat').hidden = $('ovBattle').hidden = $('ovPause').hidden = true; }
+  if (name !== 'play') { setMode('idle'); hush(); musicPlay(name, TRACKS[{ story: 'title', create: 'create', map: 'map', hq: 'hq', finale: 'finale' }[name]] || TRACKS.title, 0.6); $('ovPlat').hidden = $('ovBattle').hidden = $('ovPause').hidden = true; }
   if (name === 'story') renderStory();
   if (name === 'create') renderCreate();
   if (name === 'map') { renderMap(); loadLeaderboard(); }
@@ -1576,6 +1939,7 @@ function show(name) {
 }
 function setMode(m) {
   mode = m;
+  if (m !== 'battle') { const lb = $('lyricBox'); if (lb) lb.hidden = true; }
   keys.left = keys.right = keys.jump = false;
   const touch = $('touch');
   touch.classList.toggle('show', m === 'plat');
@@ -1589,12 +1953,15 @@ function pause(on) {
   if (on && (mode === 'plat' || mode === 'battle') && !paused) {
     if (mode === 'battle') return; // music keeps time; battles can't pause mid-song
     paused = mode; mode = 'paused'; musicStop(); $('ovPause').hidden = false; $('resumeBtn').focus();
-  } else if (!on && paused) { $('ovPause').hidden = true; setMode(paused); if (paused === 'plat') musicStart(S.style, 'road' + S.stop, 0.7); paused = null; last = performance.now(); }
+  } else if (!on && paused) { $('ovPause').hidden = true; setMode(paused); if (paused === 'plat') musicPlay('road' + S.stop, roadTrack(), 0.7); paused = null; last = performance.now(); }
 }
 $('resumeBtn').addEventListener('click', () => pause(false));
+$('lyChips').addEventListener('click', e => { const b = e.target.closest('.chip'); if (b && !b.disabled) lyPick(+b.dataset.k); });
+$('lyUndo').addEventListener('click', () => lyUndo());
+$('lySing').addEventListener('click', () => lySubmit(false));
 $('quitBtn').addEventListener('click', () => { paused = null; show('map'); });
 $('pauseBtn').addEventListener('click', e => { e.currentTarget.blur(); if (mode === 'battle') { toast('Songs keep playing once they start. You can pause on the road.'); return; } pause(mode !== 'paused'); });
-$('muteBtn').addEventListener('click', e => { muted = !muted; e.currentTarget.textContent = 'Sound: ' + (muted ? 'off' : 'on'); e.currentTarget.blur(); });
+$('muteBtn').addEventListener('click', e => { muted = !muted; if (muted) hush(); else unlockAudio(); e.currentTarget.textContent = 'Sound: ' + (muted ? 'off' : 'on'); e.currentTarget.blur(); });
 
 let last = performance.now();
 function frame(nowMs) {
@@ -1621,6 +1988,7 @@ const LMAP = { KeyD: 0, ArrowLeft: 0, KeyF: 1, ArrowDown: 1, KeyJ: 2, ArrowUp: 2
 window.addEventListener('keydown', e => {
   if (e.target && e.target.tagName === 'INPUT') return;
   if (e.code === 'KeyP' || e.code === 'Escape') { pause(mode !== 'paused'); return; }
+  if (mode === 'battle' && B && B.kind === 'lyrics') { if (/^Digit[1-9]$/.test(e.code) || /^Numpad[1-9]$/.test(e.code)) { e.preventDefault(); lyPick(+e.code.slice(-1) - 1); } else if (e.code === 'Backspace') { e.preventDefault(); lyUndo(); } else if (e.code === 'Enter' || e.code === 'Space') { e.preventDefault(); lySubmit(false); } return; }
   if (mode === 'battle') { if (e.code in LMAP || e.code === 'Space') e.preventDefault(); if (!e.repeat && e.code in LMAP) hitLane(LMAP[e.code]); if (!e.repeat && (e.code === 'Space' || e.code === 'Enter')) sugarRush(); return; }
   if (mode !== 'plat') return;
   const k = KMAP[e.code]; if (!k) return; e.preventDefault(); if (e.repeat) return;
@@ -1630,7 +1998,7 @@ window.addEventListener('keyup', e => { const k = KMAP[e.code]; if (!k) return; 
 window.addEventListener('blur', () => pause(true));
 document.addEventListener('visibilitychange', () => { if (document.hidden) pause(true); });
 gameCv.addEventListener('pointerdown', e => {
-  if (mode !== 'battle') return;
+  if (mode !== 'battle' || B.kind === 'lyrics') return;
   e.preventDefault();
   const r = gameCv.getBoundingClientRect(), x = (e.clientX - r.left) / r.width * W, g = geom();
   if (x < g.x0 - 10 || x > g.x0 + g.hw + 10) { sugarRush(); return; }
@@ -1645,6 +2013,7 @@ document.querySelectorAll('.touch button').forEach(b => {
 });
 
 renderStory();
+musicPlay('story', TRACKS.title, 0.6);
 requestAnimationFrame(frame);
 })();
 </script>
