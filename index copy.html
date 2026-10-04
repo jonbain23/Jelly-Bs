@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex, nofollow, noarchive">
 <meta name="theme-color" content="#f8efe6">
 <title>Jelly B's Battle of the Bands</title>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
@@ -147,6 +148,12 @@ button:focus-visible,input:focus-visible{outline:3px solid var(--pink);outline-o
 .sndbtn{font-family:var(--body);font-weight:900;font-size:14px;padding:8px 14px;border-radius:999px;border:3px solid var(--ink);background:var(--lemon);color:var(--ink);cursor:pointer;box-shadow:0 3px 0 var(--ink);margin-left:auto}
 .sndbtn.on{background:#fff}
 .sndbtn.bad{background:var(--pink);color:#fff}
+.sndcheck{width:100%;max-width:560px;text-align:center;display:flex;flex-direction:column;gap:8px}
+.sndcheck summary{cursor:pointer;font-weight:900;color:var(--soft);font-size:14px}
+.gateform{display:flex;flex-direction:column;gap:10px;width:100%;max-width:360px;text-align:left}
+.gateform label{display:flex;flex-direction:column;gap:4px;font-weight:900;font-size:14px}
+.gateform input{font-family:var(--body);font-weight:800;font-size:17px;padding:10px 12px;border:3px solid var(--ink);border-radius:12px;background:#fff;color:var(--ink);min-width:0}
+#gCode,#gCode2{font-family:ui-monospace,Menlo,monospace;letter-spacing:2px;text-transform:uppercase}
 .toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:var(--ink);color:#fff;font-weight:900;padding:10px 18px;border-radius:12px;z-index:9;max-width:calc(100% - 32px);text-align:center}
 
 /* play */
@@ -193,6 +200,36 @@ kbd{font-family:var(--body);background:#fff;border:2px solid var(--line);border-
   </header>
 
   <!-- STORY -->
+  <section class="scr" id="scr-gate" hidden>
+    <div class="panel gate" style="align-items:center;text-align:center">
+      <div class="lineup" id="gateLineup"></div>
+      <h2 id="gateTitle">Members only</h2>
+      <p class="muted" id="gateIntro">Jelly B's is invite only. Got an invite code? Join below. Already joined? Sign in.</p>
+      <div class="tabs" role="tablist" id="gateTabs">
+        <button class="tab" role="tab" data-gt="join" aria-selected="true">I have an invite code</button>
+        <button class="tab" role="tab" data-gt="in" aria-selected="false">I've already joined</button>
+      </div>
+      <form class="gateform" id="gateJoin">
+        <label>Invite code<input id="gCode" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="JB-XXXXXXXX" required></label>
+        <label>Email<input id="gEmail" type="email" autocomplete="email" required></label>
+        <label>Choose a password<input id="gPass" type="password" autocomplete="new-password" minlength="6" required></label>
+        <button class="go pink" type="submit" id="gJoinBtn">Join the band</button>
+      </form>
+      <form class="gateform" id="gateIn" hidden>
+        <label>Email<input id="gEmail2" type="email" autocomplete="email" required></label>
+        <label>Password<input id="gPass2" type="password" autocomplete="current-password" required></label>
+        <button class="go" type="submit" id="gInBtn">Sign in</button>
+      </form>
+      <form class="gateform" id="gateCodeOnly" hidden>
+        <p class="muted" id="gCodeOnlyMsg"></p>
+        <label>Invite code<input id="gCode2" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="JB-XXXXXXXX" required></label>
+        <button class="go pink" type="submit">Use code</button>
+        <button class="small" type="button" id="gOut">Sign out</button>
+      </form>
+      <p class="muted" id="gateMsg" role="status" style="font-size:14px;min-height:1.4em"></p>
+    </div>
+  </section>
+
   <section class="scr" id="scr-story">
     <div class="panel" style="text-align:center;align-items:center">
       <div class="lineup" id="lineup"></div>
@@ -212,6 +249,16 @@ kbd{font-family:var(--body);background:#fff;border:2px solid var(--line);border-
         <button class="go" id="storyNext">Next</button>
         <button class="go alt" id="continueBtn" hidden>Continue my tour</button>
       </div>
+      <details class="sndcheck" id="sndCheck">
+        <summary>No sound? Run a sound check</summary>
+        <p class="muted" style="font-size:14px">Tap each button and note which ones you hear.</p>
+        <div class="row" style="justify-content:center">
+          <button class="small" id="sc1">1. Game sound</button>
+          <button class="small" id="sc2">2. Phone media sound</button>
+          <button class="small" id="sc3">3. Talking voice</button>
+        </div>
+        <p id="scOut" style="font-size:13px;font-family:ui-monospace,Menlo,monospace;word-break:break-word"></p>
+      </details>
     </div>
   </section>
 
@@ -453,7 +500,7 @@ async function loadLeaderboard() {
 function renderAcct() {
   if (!sb) return;
   $('acct').hidden = false;
-  $('acctForm').hidden = !!user; $('acctOut').hidden = !user;
+  $('acctForm').hidden = true; $('acctOut').hidden = !user;
   $('acctStatus').textContent = user ? `Signed in as ${user.email}. Your tour saves online.` : 'Sign in to save your tour online and join the leaderboard.';
 }
 async function afterSignIn() {
@@ -463,19 +510,85 @@ async function afterSignIn() {
   else if (local) { S = S || local; cloudPush(); }
   renderStory();
 }
-if (sb) {
-  sb.auth.getSession().then(({ data }) => { user = data.session ? data.session.user : null; if (user) afterSignIn(); else renderAcct(); });
+/* ----- invite-only gate: one-time codes checked by Supabase ----- */
+let member = false;
+const GATE = !!(CFG.supabaseUrl && CFG.supabaseAnonKey);
+function gateMsg(m, bad) { const el = $('gateMsg'); el.textContent = m || ''; el.style.color = bad ? 'var(--berry)' : 'var(--soft)'; }
+function gateTab(which) {
+  document.querySelectorAll('#gateTabs .tab').forEach(b => b.setAttribute('aria-selected', b.dataset.gt === which));
+  $('gateJoin').hidden = which !== 'join'; $('gateIn').hidden = which !== 'in'; $('gateCodeOnly').hidden = which !== 'code';
+  $('gateTabs').hidden = which === 'code'; gateMsg('');
+}
+function showGate(which) { $('gateLineup').innerHTML = lineupHTML(); gateTab(which); show('gate'); }
+async function checkMember() {
+  if (!sb || !user) return false;
+  try { const { data } = await sb.from('jb_members').select('user_id').eq('user_id', user.id).maybeSingle(); return !!data; } catch (e) { return false; }
+}
+async function redeem(code) {
+  const { data, error } = await sb.rpc('jb_redeem_invite', { p_code: code.trim().toUpperCase() });
+  if (error) throw error;
+  return data === true;
+}
+async function enterGame() {
+  member = true; try { localStorage.removeItem('jb-pending-code'); } catch (e) {}
+  await afterSignIn(); show('story');
+}
+async function gateCheck() {
+  if (!GATE) return;
+  if (!user) { showGate('join'); return; }
+  if (await checkMember()) { await enterGame(); return; }
+  let pending = null; try { pending = localStorage.getItem('jb-pending-code'); } catch (e) {}
+  if (pending) {
+    try { if (await redeem(pending)) { toast('Welcome to the band!'); await enterGame(); return; } } catch (e) {}
+    try { localStorage.removeItem('jb-pending-code'); } catch (e) {}
+  }
+  $('gCodeOnlyMsg').textContent = `Signed in as ${user.email}. Enter an invite code to unlock the game.`;
+  showGate('code');
+}
+if (GATE && !sb) {
+  setTimeout(() => { showGate('join'); document.querySelectorAll('#gateTabs, .gateform').forEach(el => el.hidden = true); gateMsg('Can\'t reach the Jelly B\'s members server right now. Check your internet connection and reload the page.', true); }, 0);
+}
+if (GATE && sb) {
+  document.querySelectorAll('#gateTabs .tab').forEach(b => b.addEventListener('click', () => gateTab(b.dataset.gt)));
+  sb.auth.getSession().then(({ data }) => { user = data.session ? data.session.user : null; renderAcct(); gateCheck(); });
   sb.auth.onAuthStateChange((_e, session) => { user = session ? session.user : null; renderAcct(); });
-  $('acctForm').addEventListener('submit', async e => {
+  $('gateJoin').addEventListener('submit', async e => {
     e.preventDefault();
-    const { error } = await sb.auth.signInWithPassword({ email: $('acctEmail').value.trim(), password: $('acctPass').value });
-    if (error) toast(error.message); else { user = (await sb.auth.getUser()).data.user; toast('Signed in!'); afterSignIn(); }
+    const code = $('gCode').value.trim().toUpperCase(), email = $('gEmail').value.trim(), pass = $('gPass').value;
+    $('gJoinBtn').disabled = true; gateMsg('Checking your code…');
+    try {
+      const { data: ok, error: vErr } = await sb.rpc('jb_invite_valid', { p_code: code });
+      if (vErr) throw vErr;
+      if (!ok) { gateMsg('That code isn\'t valid or has already been used. Check it and try again.', true); return; }
+      try { localStorage.setItem('jb-pending-code', code); } catch (e2) {}
+      const { data, error } = await sb.auth.signUp({ email, password: pass });
+      if (error) {
+        if (/registered|exists/i.test(error.message)) { gateMsg('That email already has an account. Use "I\'ve already joined" to sign in, and your code will be used then.', true); gateTab('in'); $('gEmail2').value = email; return; }
+        throw error;
+      }
+      if (!data.session) { gateMsg('Nearly there! Check your email to confirm your account, then come back and sign in. Your code is saved.'); gateTab('in'); $('gEmail2').value = email; return; }
+      user = data.user;
+      if (await redeem(code)) { toast('Welcome to the band!'); await enterGame(); }
+      else gateMsg('Someone used that code a moment ago. Ask for a new one.', true);
+    } catch (err) { gateMsg('Something went wrong: ' + (err.message || err), true); }
+    finally { $('gJoinBtn').disabled = false; }
   });
-  $('acctUp').addEventListener('click', async () => {
-    const { data, error } = await sb.auth.signUp({ email: $('acctEmail').value.trim(), password: $('acctPass').value });
-    if (error) toast(error.message); else if (!data.session) toast('Check your email to confirm your account, then sign in.'); else { user = data.user; toast('Account created!'); afterSignIn(); }
+  $('gateIn').addEventListener('submit', async e => {
+    e.preventDefault(); $('gInBtn').disabled = true; gateMsg('Signing in…');
+    try {
+      const { error } = await sb.auth.signInWithPassword({ email: $('gEmail2').value.trim(), password: $('gPass2').value });
+      if (error) { gateMsg(error.message === 'Invalid login credentials' ? 'Email or password not recognised.' : error.message, true); return; }
+      user = (await sb.auth.getUser()).data.user; gateMsg(''); await gateCheck();
+    } finally { $('gInBtn').disabled = false; }
   });
-  $('acctOut').addEventListener('click', async () => { await sb.auth.signOut(); user = null; renderAcct(); toast('Signed out. Your tour is still saved on this device.'); });
+  $('gateCodeOnly').addEventListener('submit', async e => {
+    e.preventDefault();
+    try { if (await redeem($('gCode2').value)) { toast('Welcome to the band!'); await enterGame(); } else gateMsg('That code isn\'t valid or has already been used.', true); }
+    catch (err) { gateMsg('Something went wrong: ' + (err.message || err), true); }
+  });
+  $('gOut').addEventListener('click', async () => { await sb.auth.signOut(); user = null; showGate('in'); });
+  $('acctForm').addEventListener('submit', e => e.preventDefault());
+  $('acctOut').addEventListener('click', async () => { await sb.auth.signOut(); user = null; member = false; S = null; showGate('in'); toast('Signed out.'); });
 }
 
 /* ---------- save ---------- */
@@ -505,24 +618,34 @@ function audio() {
 }
 function silentWavURL() {
   try {
-    const n = 4410, buf = new ArrayBuffer(44 + n * 2), v = new DataView(buf), w = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
+    const n = 2205, buf = new ArrayBuffer(44 + n * 2), v = new DataView(buf), w = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
     w(0, 'RIFF'); v.setUint32(4, 36 + n * 2, true); w(8, 'WAVE'); w(12, 'fmt '); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
-    v.setUint32(24, 44100, true); v.setUint32(28, 88200, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true); w(36, 'data'); v.setUint32(40, n * 2, true);
-    return URL.createObjectURL(new Blob([buf], { type: 'audio/wav' }));
+    v.setUint32(24, 22050, true); v.setUint32(28, 44100, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true); w(36, 'data'); v.setUint32(40, n * 2, true);
+    let bin = ''; const u8 = new Uint8Array(buf); for (let i = 0; i < u8.length; i++) bin += String.fromCharCode(u8[i]);
+    return 'data:audio/wav;base64,' + btoa(bin);
   } catch (e) { return null; }
 }
+let silentEl = null, silentOK = false, speechPrimed = false;
+try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch (e) {}
+/* iPhone/iPad only allow sound to start when a finger lifts (touchend/click), so keep retrying on every gesture until it's running */
 function unlockAudio() {
   const a = audio(); if (!a) return;
-  if (a.state !== 'running') a.resume().catch(() => {});
-  if (unlocked) return;
+  try { if (navigator.audioSession && navigator.audioSession.type !== 'playback') navigator.audioSession.type = 'playback'; } catch (e) {}
+  if (a.state !== 'running') {
+    a.resume().then(() => { if (MUS.pending && !MUS.on) startPending(); }).catch(() => {});
+    try { const b = a.createBuffer(1, 1, 22050), src = a.createBufferSource(); src.buffer = b; src.connect(a.destination); src.start(0); } catch (e) {}
+  }
+  if (!silentOK) {
+    try {
+      if (!silentEl) { const u = silentWavURL(); if (u) { silentEl = new Audio(); silentEl.src = u; silentEl.loop = true; silentEl.setAttribute('playsinline', ''); silentEl.setAttribute('webkit-playsinline', ''); } }
+      if (silentEl) { const p = silentEl.play(); if (p && p.then) p.then(() => { silentOK = true; }).catch(() => {}); }
+    } catch (e) {}
+  }
+  if (!speechPrimed && 'speechSynthesis' in window) { try { const u = new SpeechSynthesisUtterance(' '); u.volume = 0; speechSynthesis.speak(u); speechPrimed = true; } catch (e) {} }
   unlocked = true;
-  try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch (e) {}
-  try { const b = a.createBuffer(1, 1, 22050), src = a.createBufferSource(); src.buffer = b; src.connect(a.destination); src.start(0); } catch (e) {}
-  try { const u = silentWavURL(); if (u) { const el = new Audio(u); el.loop = true; el.volume = 0.01; el.setAttribute('playsinline', ''); el.play().catch(() => {}); } } catch (e) {}
-  try { if ('speechSynthesis' in window) { const u = new SpeechSynthesisUtterance(' '); u.volume = 0; speechSynthesis.speak(u); } } catch (e) {}
-  setTimeout(() => { if (MUS.pending && !MUS.on) startPending(); }, 60);
+  setTimeout(() => { if (MUS.pending && !MUS.on && actx && actx.state === 'running') startPending(); }, 80);
 }
-['pointerdown', 'touchend', 'keydown', 'click'].forEach(ev => document.addEventListener(ev, unlockAudio, { capture: true }));
+['pointerdown', 'pointerup', 'touchend', 'mouseup', 'keydown', 'click'].forEach(ev => document.addEventListener(ev, unlockAudio, { capture: true, passive: true }));
 document.addEventListener('visibilitychange', () => { if (!document.hidden && actx && actx.state !== 'running') actx.resume().catch(() => {}); });
 function aNow() { return actx ? actx.currentTime : performance.now() / 1000; }
 function tone(f1, f2, dur, type = 'sine', vol = 0.1, when = 0) {
@@ -588,19 +711,59 @@ function soundStatus() {
   if (muted) label = 'Sound off · tap to turn on';
   else if (!actx || !unlocked) label = 'Tap for sound';
   else if (actx.state !== 'running') { label = 'Sound blocked · tap again'; cls = 'bad'; }
-  else { label = '♪ Sound on'; cls = 'on'; }
+  else { label = '♪ Sound on · tap to mute'; cls = 'on'; }
   if (b.textContent !== label) b.textContent = label;
   b.className = 'sndbtn ' + cls;
 }
+function setMuted(m) {
+  muted = m;
+  try { localStorage.setItem('jellybs-muted', m ? '1' : '0'); } catch (e) {}
+  const mb = document.getElementById('muteBtn'); if (mb) mb.textContent = 'Sound: ' + (m ? 'off' : 'on');
+  if (m) hush();
+  soundStatus();
+}
+try { if (localStorage.getItem('jellybs-muted') === '1') muted = true; } catch (e) {}
 document.getElementById('sndBtn').addEventListener('click', e => {
   e.currentTarget.blur();
-  if (muted) { muted = false; const mb = document.getElementById('muteBtn'); if (mb) mb.textContent = 'Sound: on'; }
+  const playing = e.currentTarget.classList.contains('on');
+  if (playing) { setMuted(true); return; }
+  setMuted(false);
   unlockAudio();
   const a = audio();
   if (a) a.resume().then(() => { tone(523, 523, 0.15, 'triangle', 0.12); tone(784, 784, 0.25, 'triangle', 0.12, a.currentTime + 0.12); if (MUS.pending && !MUS.on) startPending(); soundStatus(); }).catch(() => soundStatus());
   setTimeout(soundStatus, 400);
 });
 setInterval(soundStatus, 700);
+
+function beepWavURL() {
+  const sr = 22050, n = Math.floor(sr * 0.5), buf = new ArrayBuffer(44 + n * 2), v = new DataView(buf), w = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
+  w(0, 'RIFF'); v.setUint32(4, 36 + n * 2, true); w(8, 'WAVE'); w(12, 'fmt '); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+  v.setUint32(24, sr, true); v.setUint32(28, sr * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true); w(36, 'data'); v.setUint32(40, n * 2, true);
+  for (let i = 0; i < n; i++) { const env = Math.min(1, i / 400, (n - i) / 2000); v.setInt16(44 + i * 2, Math.sin(i / sr * 2 * Math.PI * (i < n / 2 ? 660 : 880)) * 12000 * env, true); }
+  let bin = ''; const u8 = new Uint8Array(buf); for (let i = 0; i < u8.length; i++) bin += String.fromCharCode(u8[i]);
+  return 'data:audio/wav;base64,' + btoa(bin);
+}
+function scReport(msg) {
+  const a = actx;
+  const info = [`result: ${msg}`, `engine: ${a ? a.state : 'not started'}${a ? ' @' + a.sampleRate + 'Hz' : ''}`, `muted: ${muted}`, `silent-switch helper: ${silentOK ? 'playing' : 'not playing'}`,
+    `audioSession: ${navigator.audioSession ? navigator.audioSession.type : 'n/a'}`, `voice: ${'speechSynthesis' in window ? 'yes' : 'no'}`, `framed: ${window.top !== window.self}`, `device: ${navigator.userAgent.replace(/.*?\(([^)]*)\).*/, '$1').slice(0, 60)}`];
+  document.getElementById('scOut').innerHTML = info.map(esc).join('<br>');
+}
+document.getElementById('sc1').addEventListener('click', () => {
+  setMuted(false); unlockAudio(); const a = audio();
+  if (!a) { scReport('no Web Audio in this browser'); return; }
+  a.resume().then(() => { tone(523, 523, 0.25, 'triangle', 0.25); tone(784, 784, 0.35, 'triangle', 0.25, a.currentTime + 0.25); scReport('played two notes'); }).catch(err => scReport('blocked: ' + err));
+  setTimeout(() => scReport(a.state === 'running' ? 'engine running, two notes sent' : 'engine still ' + a.state), 600);
+});
+document.getElementById('sc2').addEventListener('click', () => {
+  try { const el = new Audio(beepWavURL()); el.setAttribute('playsinline', ''); const p = el.play(); if (p && p.then) p.then(() => scReport('media beep playing')).catch(err => scReport('media blocked: ' + err.name)); else scReport('media beep sent'); }
+  catch (err) { scReport('media error: ' + err.name); }
+});
+document.getElementById('sc3').addEventListener('click', () => {
+  if (!('speechSynthesis' in window)) { scReport('no voice in this browser'); return; }
+  try { speechSynthesis.cancel(); const u = new SpeechSynthesisUtterance('Hello from the Jelly Bees!'); u.pitch = 1.6; u.onend = () => scReport('voice finished'); u.onerror = ev => scReport('voice error: ' + ev.error); speechSynthesis.speak(u); scReport('voice started'); }
+  catch (err) { scReport('voice error: ' + err.name); }
+});
 
 /* ---------- music: chords, tracks and the music director ---------- */
 const CHORD_CACHE = {};
@@ -676,6 +839,7 @@ function startPending() {
 }
 function musicStop() { MUS.on = false; MUS.key = null; MUS.pending = null; }
 function musicTick() {
+  if (!MUS.on && MUS.pending && unlocked && actx && actx.state === 'running') startPending();
   if (!MUS.on || !actx) return;
   if (muted || actx.state !== 'running') { MUS.next = Math.max(MUS.next, actx.currentTime + 0.05); return; }
   if (MUS.next < actx.currentTime - 0.5) MUS.next = actx.currentTime + 0.05;
@@ -1947,13 +2111,14 @@ $('finNew').addEventListener('click', () => { try { localStorage.removeItem('jel
 /* ======================================================================
    SCREENS, LOOP, INPUT
    ====================================================================== */
-const SCREENS = ['story', 'create', 'map', 'hq', 'play', 'finale'];
+const SCREENS = ['gate', 'story', 'create', 'map', 'hq', 'play', 'finale'];
 let screen = 'story';
 function show(name) {
   screen = name;
   SCREENS.forEach(s => $('scr-' + s).hidden = s !== name);
-  $('statStrip').hidden = !S || name === 'story' || name === 'create';
-  if (name !== 'play') { setMode('idle'); hush(); musicPlay(name, TRACKS[{ story: 'title', create: 'create', map: 'map', hq: 'hq', finale: 'finale' }[name]] || TRACKS.title, 0.6); $('ovPlat').hidden = $('ovBattle').hidden = $('ovPause').hidden = true; }
+  if (GATE && !member && name !== 'gate') { showGate(user ? 'code' : 'join'); return; }
+  $('statStrip').hidden = !S || name === 'gate' || name === 'story' || name === 'create';
+  if (name !== 'play') { setMode('idle'); hush(); musicPlay(name === 'gate' ? 'story' : name, TRACKS[{ gate: 'title', story: 'title', create: 'create', map: 'map', hq: 'hq', finale: 'finale' }[name]] || TRACKS.title, 0.6); $('ovPlat').hidden = $('ovBattle').hidden = $('ovPause').hidden = true; }
   if (name === 'story') renderStory();
   if (name === 'create') renderCreate();
   if (name === 'map') { renderMap(); loadLeaderboard(); }
@@ -1985,7 +2150,8 @@ $('lyUndo').addEventListener('click', () => lyUndo());
 $('lySing').addEventListener('click', () => lySubmit(false));
 $('quitBtn').addEventListener('click', () => { paused = null; show('map'); });
 $('pauseBtn').addEventListener('click', e => { e.currentTarget.blur(); if (mode === 'battle') { toast('Songs keep playing once they start. You can pause on the road.'); return; } pause(mode !== 'paused'); });
-$('muteBtn').addEventListener('click', e => { muted = !muted; if (muted) hush(); else unlockAudio(); soundStatus(); e.currentTarget.textContent = 'Sound: ' + (muted ? 'off' : 'on'); e.currentTarget.blur(); });
+$('muteBtn').addEventListener('click', e => { setMuted(!muted); if (!muted) unlockAudio(); e.currentTarget.textContent = 'Sound: ' + (muted ? 'off' : 'on'); e.currentTarget.blur(); });
+$('muteBtn').textContent = 'Sound: ' + (muted ? 'off' : 'on');
 
 let last = performance.now();
 function frame(nowMs) {
@@ -2036,7 +2202,7 @@ document.querySelectorAll('.touch button').forEach(b => {
   b.addEventListener('contextmenu', e => e.preventDefault());
 });
 
-renderStory();
+if (GATE) { $('scr-story').hidden = true; $('scr-gate').hidden = false; $('gateLineup').innerHTML = lineupHTML(); gateMsg('Loading…'); } else renderStory();
 musicPlay('story', TRACKS.title, 0.6);
 requestAnimationFrame(frame);
 })();
