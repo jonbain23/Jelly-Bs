@@ -18,3 +18,12 @@ Netlify > Add new site > Import from GitHub > pick this repo. No build command; 
 ## Controls
 Road: arrows or A/D to move, Space to jump, X for special moves (Cola Jack's fizz rocket, Berry Bella's dash), P to pause.
 Battles: D F J K or the arrow keys on the beat; Space for Sugar Rush when the meter is full. Touch screens get on-screen buttons and tappable lanes.
+
+## Invite codes (one-time use)
+The game is invite only once Supabase keys are in `config.js`.
+- Make codes: in Supabase SQL Editor run `select * from public.jb_make_invites(5, 'Cousins');`
+- See codes and who used them: `select code, note, used_at from public.jb_invites order by created_at desc;`
+Each code works once. After joining, players sign in with their email and password.
+
+## Hidden from search engines
+`robots.txt`, a noindex meta tag and an X-Robots-Tag header keep the site out of Google.
